@@ -19,6 +19,11 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Clean Git working directory
+        run: |
+          git reset --hard
+          git clean -fd
+
       - name: Patch version
         run: npm run patch-version
 
