@@ -19,19 +19,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Configure Git
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-
-      - name: Clean Git working directory
-        run: |
-          git reset --hard
-          git clean -fd
-
-      - name: Patch version
-        run: npm run patch-version
-
       - name: Build the extension
         run: npm run compile
 
