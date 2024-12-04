@@ -9,7 +9,13 @@
   "categories": [
     "Visualization"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onCommand:logViewer.manageHighlightRules",
+    "onCommand:logViewer.exportRules",
+    "onCommand:logViewer.importRules",
+    "onCommand:logViewer.revertChanges",
+    "onCommand:logViewer.convertToPlus"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
