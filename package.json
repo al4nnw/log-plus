@@ -9,7 +9,7 @@
   "categories": [
     "Visualization"
   ],
-  "publisher": "Alan Sousa",
+  "publisher": "a4nnw",
   "activationEvents": [
     "onCommand:logViewer.manageHighlightRules",
     "onCommand:logViewer.exportRules",
