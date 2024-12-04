@@ -19,6 +19,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Patch version
+        run: npm run patch-version
+
       - name: Build the extension
         run: npm run compile
 
