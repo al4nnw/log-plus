@@ -4,7 +4,7 @@
   "description": "Adds helpful features to navigate log files",
   "version": "0.0.1",
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.93.0"
   },
   "categories": [
     "Visualization"
