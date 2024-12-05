@@ -48,7 +48,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.window.onDidChangeActiveTextEditor((editor) => {
 			if (editor) {
-				ruleManager.updateDecorations(editor);
+				ruleManager.triggerUpdateDecorations(editor);
 			}
 		})
 	);
@@ -64,7 +64,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Initial decoration update
 	if (vscode.window.activeTextEditor) {
-		ruleManager.updateDecorations(vscode.window.activeTextEditor);
+		ruleManager.triggerUpdateDecorations(vscode.window.activeTextEditor);
 	}
 }
 
@@ -92,9 +92,6 @@ interface OriginalContent {
 export class RuleManager {
 	private fileRules: FileRules = {};
 	private originalContent: OriginalContent = {};
-	private decorationTypes: {
-		[color: string]: vscode.TextEditorDecorationType;
-	} = {};
 	private lineDecorationTypes: {
 		[color: string]: vscode.TextEditorDecorationType;
 	} = {};
@@ -165,6 +162,8 @@ export class RuleManager {
 				after: {
 					margin: "0 0 0 4px",
 				},
+				overviewRulerColor: "gray",
+				overviewRulerLane: vscode.OverviewRulerLane.Center,
 			}
 		);
 
@@ -174,6 +173,8 @@ export class RuleManager {
 				contentText: "⚠️",
 				margin: "0 0 0 4px",
 			},
+			overviewRulerColor: "yellow",
+			overviewRulerLane: vscode.OverviewRulerLane.Right,
 		});
 	}
 
@@ -268,7 +269,7 @@ export class RuleManager {
 				if (this.fileRules[originalFilePath]) {
 					this.fileRules[newFileUri] = this.fileRules[originalFilePath];
 					await this.saveRules();
-					this.updateDecorations(vscode.window.activeTextEditor!);
+					this.triggerUpdateDecorations(vscode.window.activeTextEditor!);
 				}
 
 				this.outputChannel.appendLine(
@@ -318,7 +319,7 @@ export class RuleManager {
 				const colorName =
 					this.predefinedColors.find((c) => c.value === rule.color)?.display ||
 					"Custom Color";
-				const colorSquare = "■"; // Use a filled square character
+				const colorSquare = "■";
 				return {
 					label: `${index + 1}. ${colorSquare} ${icon} ${rule.condition}`,
 					description: `${colorName}`,
@@ -507,7 +508,6 @@ export class RuleManager {
 					});
 
 					if (newSearchTerm === undefined || newSearchTerm.trim() === "") {
-						// User canceled or entered empty input
 						return;
 					}
 
@@ -520,7 +520,6 @@ export class RuleManager {
 
 				case "Change Color/Replacement":
 					if (rule.ruleType === "annotation") {
-						// Prompt for the highlight color
 						const colorPick = await vscode.window.showQuickPick(
 							this.predefinedColors.map((c) => c.display),
 							{
@@ -531,7 +530,6 @@ export class RuleManager {
 						);
 
 						if (!colorPick) {
-							// User canceled
 							return;
 						}
 
@@ -545,7 +543,6 @@ export class RuleManager {
 						rule.color = colorObj.value;
 						rule.displayColor = colorObj.display;
 					} else if (rule.ruleType === "replacement") {
-						// Prompt for replacement text
 						const replacement = await vscode.window.showInputBox({
 							prompt: "Enter replacement text",
 							placeHolder: "Replacement text",
@@ -553,11 +550,9 @@ export class RuleManager {
 						});
 
 						if (replacement === undefined) {
-							// User canceled
 							return;
 						}
 
-						// Check for potential infinite loop
 						if (replacement.includes(rule.condition)) {
 							vscode.window.showErrorMessage(
 								"Replacement text cannot contain the search term to prevent infinite loops."
@@ -571,11 +566,20 @@ export class RuleManager {
 			}
 
 			await this.saveRules();
-			this.updateDecorations(editor);
+			await this.updateDecorationsWithProgress(editor);
 
 			// For replacement rules, re-apply replacements
 			if (rule.ruleType === "replacement") {
-				await this.applyReplacementRule(editor, rule);
+				await vscode.window.withProgress(
+					{
+						location: vscode.ProgressLocation.Window,
+						title: "Applying rules...",
+					},
+					async () => {
+						await this.applyReplacementRule(editor, rule);
+						await this.updateDecorationsWithProgress(editor);
+					}
+				);
 			}
 		}
 	}
@@ -595,16 +599,26 @@ export class RuleManager {
 			await this.saveRules();
 
 			if (rule.ruleType === "replacement") {
-				await this.restoreOriginalContent(editor, rule);
+				await vscode.window.withProgress(
+					{
+						location: vscode.ProgressLocation.Window,
+						title: "Reverting content...",
+					},
+					async () => {
+						await this.restoreOriginalContent(editor, rule);
+						await this.updateDecorationsWithProgress(editor);
+					}
+				);
+			} else {
+				await this.updateDecorationsWithProgress(editor);
 			}
 
-			this.updateDecorations(editor);
 			this.outputChannel.appendLine(`Deleted rule: ${rule.condition}`);
 		}
 	}
 
 	/**
-	 * Adds a new highlight rule based on user input.
+	 * Adds a new highlight rule.
 	 */
 	private async addHighlightRule() {
 		const editor = vscode.window.activeTextEditor;
@@ -617,7 +631,6 @@ export class RuleManager {
 		const fsPath = editor.document.uri.fsPath;
 		const isPlusFile = fsPath.endsWith("-plus" + path.extname(fsPath));
 
-		// Prompt for rule type
 		const ruleTypeOptions = ["Annotation"];
 		if (isPlusFile) {
 			ruleTypeOptions.push("Replacement");
@@ -628,30 +641,25 @@ export class RuleManager {
 		});
 
 		if (!ruleTypePick) {
-			// User canceled
 			return;
 		}
 
 		const ruleType = ruleTypePick.toLowerCase() as "annotation" | "replacement";
 
-		// Prompt for the search term
 		const searchTerm = await vscode.window.showInputBox({
 			prompt: "Enter the search term or pattern",
 			placeHolder: "Search term",
 		});
 
 		if (searchTerm === undefined || searchTerm.trim() === "") {
-			// User canceled or entered empty input
 			return;
 		}
 
-		// Prompt to determine if the search term is a regex
 		const isRegexPick = await vscode.window.showQuickPick(["No", "Yes"], {
 			placeHolder: "Is this a regular expression?",
 		});
 
 		if (!isRegexPick) {
-			// User canceled
 			return;
 		}
 
@@ -661,7 +669,6 @@ export class RuleManager {
 		let replacement;
 
 		if (ruleType === "annotation") {
-			// Prompt for the highlight color
 			const colorPick = await vscode.window.showQuickPick(
 				this.predefinedColors.map((c) => c.display),
 				{
@@ -670,7 +677,6 @@ export class RuleManager {
 			);
 
 			if (!colorPick) {
-				// User canceled
 				return;
 			}
 
@@ -679,18 +685,15 @@ export class RuleManager {
 				return;
 			}
 		} else if (ruleType === "replacement") {
-			// Prompt for replacement text
 			replacement = await vscode.window.showInputBox({
 				prompt: "Enter replacement text",
 				placeHolder: "Replacement text",
 			});
 
 			if (replacement === undefined) {
-				// User canceled
 				return;
 			}
 
-			// Check for potential infinite loop
 			if (replacement.includes(searchTerm)) {
 				vscode.window.showErrorMessage(
 					"Replacement text cannot contain the search term to prevent infinite loops."
@@ -699,12 +702,10 @@ export class RuleManager {
 			}
 		}
 
-		// Initialize the rules array for this file if it doesn't exist
 		if (!this.fileRules[fileUri]) {
 			this.fileRules[fileUri] = [];
 		}
 
-		// Add the new rule
 		const newRule: Rule = {
 			condition: searchTerm,
 			isRegex: isRegex,
@@ -718,13 +719,20 @@ export class RuleManager {
 
 		await this.saveRules();
 
-		// Apply the highlighting
-		this.updateDecorations(editor);
-
-		// For replacement rules, apply replacements
-		if (ruleType === "replacement") {
-			await this.applyReplacementRule(editor, newRule);
-		}
+		// Show loading indicator when processing
+		await vscode.window.withProgress(
+			{
+				location: vscode.ProgressLocation.Window,
+				title: "Applying rules...",
+			},
+			async () => {
+				await this.updateDecorationsWithProgress(editor);
+				if (ruleType === "replacement") {
+					await this.applyReplacementRule(editor, newRule);
+					await this.updateDecorationsWithProgress(editor);
+				}
+			}
+		);
 
 		this.outputChannel.appendLine(`Added new rule: ${searchTerm}`);
 	}
@@ -753,14 +761,11 @@ export class RuleManager {
 		});
 
 		if (!uri) {
-			// User canceled
 			return;
 		}
 
 		const rulesJson = JSON.stringify(rules, null, 2);
-
 		await vscode.workspace.fs.writeFile(uri, Buffer.from(rulesJson, "utf8"));
-
 		vscode.window.showInformationMessage("Rules exported successfully.");
 		this.outputChannel.appendLine("Rules exported.");
 	}
@@ -781,7 +786,6 @@ export class RuleManager {
 		});
 
 		if (!uris || uris.length === 0) {
-			// User canceled
 			return;
 		}
 
@@ -793,19 +797,16 @@ export class RuleManager {
 		try {
 			const importedRules: Rule[] = JSON.parse(fileContents.toString());
 
-			// Validate imported rules
 			if (!Array.isArray(importedRules)) {
 				throw new Error("Invalid rules format.");
 			}
 
-			// Ask user whether to replace or merge
 			const action = await vscode.window.showQuickPick(["Replace", "Merge"], {
 				placeHolder:
 					"Do you want to replace existing rules or merge with them?",
 			});
 
 			if (!action) {
-				// User canceled
 				return;
 			}
 
@@ -819,15 +820,22 @@ export class RuleManager {
 					mergedRulesMap[rule.condition] = rule;
 				}
 				for (const rule of importedRules) {
-					mergedRulesMap[rule.condition] = rule; // Overwrite existing rule with the same condition
+					mergedRulesMap[rule.condition] = rule; // Overwrite
 				}
 				this.fileRules[fileUri] = Object.values(mergedRulesMap);
 			}
 
 			await this.saveRules();
 
-			// Apply the highlighting
-			this.updateDecorations(editor);
+			await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Window,
+					title: "Applying rules...",
+				},
+				async () => {
+					await this.updateDecorationsWithProgress(editor);
+				}
+			);
 
 			vscode.window.showInformationMessage("Rules imported successfully.");
 			this.outputChannel.appendLine("Rules imported.");
@@ -866,16 +874,13 @@ export class RuleManager {
 					originalLines[lineNum] = lineText;
 				}
 
-				// Replace text
 				lineText = lineText.replace(regex, rule.replacement || "");
 				edit.replace(document.uri, line.range, lineText);
 			}
 		}
 
-		// Apply edits
 		await vscode.workspace.applyEdit(edit);
 
-		// Save original content
 		this.originalContent[fileUri] = originalLines;
 		await this.saveOriginalContent();
 
@@ -904,15 +909,12 @@ export class RuleManager {
 			const lineNum = parseInt(lineNumStr, 10);
 			const originalText = originalLines[lineNum];
 
-			// Replace line with original text
 			const line = document.lineAt(lineNum);
 			edit.replace(document.uri, line.range, originalText);
 		}
 
-		// Apply edits
 		await vscode.workspace.applyEdit(edit);
 
-		// Remove stored original content
 		delete this.originalContent[fileUri];
 		await this.saveOriginalContent();
 
@@ -941,7 +943,6 @@ export class RuleManager {
 			return;
 		}
 
-		// Confirm with the user
 		const confirm = await vscode.window.showWarningMessage(
 			"Are you sure you want to revert all changes?",
 			"Yes",
@@ -952,19 +953,16 @@ export class RuleManager {
 			return;
 		}
 
-		// Get original file path
 		const originalFilePath = filePath.replace(
 			"-plus" + path.extname(filePath),
 			path.extname(filePath)
 		);
 
 		try {
-			// Read original file content
 			const originalContent = await vscode.workspace.fs.readFile(
 				vscode.Uri.file(originalFilePath)
 			);
 
-			// Replace the content of the "-plus" file
 			const edit = new vscode.WorkspaceEdit();
 			const fullRange = new vscode.Range(
 				document.positionAt(0),
@@ -973,14 +971,12 @@ export class RuleManager {
 			edit.replace(document.uri, fullRange, originalContent.toString());
 			await vscode.workspace.applyEdit(edit);
 
-			// Clear any stored original content and rules
 			delete this.originalContent[document.uri.toString()];
 			await this.saveOriginalContent();
 			delete this.fileRules[document.uri.toString()];
 			await this.saveRules();
 
-			// Update decorations
-			this.updateDecorations(editor);
+			await this.updateDecorationsWithProgress(editor);
 
 			vscode.window.showInformationMessage("Changes reverted successfully.");
 			this.outputChannel.appendLine("Reverted changes.");
@@ -995,18 +991,39 @@ export class RuleManager {
 	}
 
 	/**
-	 * Updates the decorations (highlighting) in the editor.
+	 * Updates the decorations (highlighting) in the editor with a loading indicator.
 	 * @param editor The text editor to update.
 	 */
-	updateDecorations(editor: vscode.TextEditor) {
+	private async updateDecorationsWithProgress(editor: vscode.TextEditor) {
+		await vscode.window.withProgress(
+			{
+				location: vscode.ProgressLocation.Window,
+				title: "Applying rules...",
+			},
+			async (progress) => {
+				await this.updateDecorations(editor, progress);
+			}
+		);
+	}
+
+	/**
+	 * Updates the decorations (highlighting) in the editor.
+	 * Processes the entire file and adds overview ruler marks.
+	 * @param editor The text editor to update.
+	 * @param progress Optional progress indicator.
+	 */
+	private async updateDecorations(
+		editor: vscode.TextEditor,
+		progress?: vscode.Progress<{
+			message?: string;
+			increment?: number;
+		}>
+	) {
 		const fileUri = editor.document.uri.toString();
 		const rules = this.fileRules[fileUri];
 
-		// Clear decorations if there are no rules
+		// Clear decorations if no rules
 		if (!rules || rules.length === 0) {
-			for (const decorationType of Object.values(this.decorationTypes)) {
-				editor.setDecorations(decorationType, []);
-			}
 			for (const decorationType of Object.values(this.lineDecorationTypes)) {
 				editor.setDecorations(decorationType, []);
 			}
@@ -1018,7 +1035,6 @@ export class RuleManager {
 			return;
 		}
 
-		// Clear previous decorations
 		for (const decorationType of Object.values(this.lineDecorationTypes)) {
 			editor.setDecorations(decorationType, []);
 		}
@@ -1028,8 +1044,6 @@ export class RuleManager {
 		editor.setDecorations(this.indicatorDecorationType, []);
 		editor.setDecorations(this.warningDecorationType, []);
 
-		// Optimization: Process only the visible ranges
-		const visibleRanges = editor.visibleRanges;
 		const indicatorDecorationOptions: vscode.DecorationOptions[] = [];
 		const lineDecorationOptionsMap: {
 			[color: string]: vscode.DecorationOptions[];
@@ -1038,149 +1052,142 @@ export class RuleManager {
 			[color: string]: vscode.DecorationOptions[];
 		} = {};
 		const warningDecorationOptions: vscode.DecorationOptions[] = [];
-
 		const replacementCounts: { [line: number]: number } = {};
 
-		for (const range of visibleRanges) {
-			const startLine = range.start.line;
-			const endLine = range.end.line;
+		const lineCount = editor.document.lineCount;
 
-			for (let lineNum = startLine; lineNum <= endLine; lineNum++) {
-				const line = editor.document.lineAt(lineNum);
-				const lineText = line.text;
+		for (let lineNum = 0; lineNum < lineCount; lineNum++) {
+			const line = editor.document.lineAt(lineNum);
+			const lineText = line.text;
 
-				const matchingRules: Rule[] = [];
-				const appliedRulesSet = new Set<string>();
+			// Update progress
+			if (progress && lineNum % 50 === 0) {
+				progress.report({
+					message: `Processing line ${lineNum + 1} of ${lineCount}`,
+					increment: (lineNum / lineCount) * 100,
+				});
+			}
 
-				for (const rule of rules) {
-					let regex: RegExp;
-					try {
-						regex = rule.isRegex
-							? new RegExp(rule.condition, "gi") // 'g' and 'i' flags for global, case-insensitive matching
-							: new RegExp(this.escapeRegExp(rule.condition), "gi");
-					} catch (error) {
-						vscode.window.showErrorMessage(
-							`Invalid regular expression: ${rule.condition}`
-						);
-						continue;
-					}
+			const matchingRules: Rule[] = [];
+			const appliedRulesSet = new Set<string>();
 
-					let hasMatch = false;
-
-					let match;
-					while ((match = regex.exec(lineText)) !== null) {
-						hasMatch = true;
-
-						// If the same rule applies more than once, only add it once
-						if (!appliedRulesSet.has(rule.condition)) {
-							matchingRules.push(rule);
-							appliedRulesSet.add(rule.condition);
-
-							// For replacement rules, track replacement counts
-							if (rule.ruleType === "replacement") {
-								replacementCounts[lineNum] =
-									(replacementCounts[lineNum] || 0) + 1;
-							}
-						}
-
-						// Apply matched text decoration
-						const startPos = new vscode.Position(lineNum, match.index);
-						const endPos = new vscode.Position(
-							lineNum,
-							match.index + match[0].length
-						);
-						const matchRange = new vscode.Range(startPos, endPos);
-
-						// Create or get match decoration type for the rule color
-						let matchDecorationType = this.matchDecorationTypes[rule.color];
-						if (!matchDecorationType) {
-							matchDecorationType =
-								vscode.window.createTextEditorDecorationType({
-									backgroundColor: this.applyOpacityToColor(rule.color, 0.5),
-								});
-							this.matchDecorationTypes[rule.color] = matchDecorationType;
-						}
-
-						if (!matchDecorationOptionsMap[rule.color]) {
-							matchDecorationOptionsMap[rule.color] = [];
-						}
-						matchDecorationOptionsMap[rule.color].push({ range: matchRange });
-					}
-
-					if (hasMatch) {
-						// Apply line decoration with lower opacity
-						const lineRange = line.range;
-
-						// Create or get line decoration type for the rule color
-						let lineDecorationType = this.lineDecorationTypes[rule.color];
-						if (!lineDecorationType) {
-							lineDecorationType = vscode.window.createTextEditorDecorationType(
-								{
-									backgroundColor: this.applyOpacityToColor(rule.color, 0.1),
-									isWholeLine: true,
-								}
-							);
-							this.lineDecorationTypes[rule.color] = lineDecorationType;
-						}
-
-						if (!lineDecorationOptionsMap[rule.color]) {
-							lineDecorationOptionsMap[rule.color] = [];
-						}
-						lineDecorationOptionsMap[rule.color].push({ range: lineRange });
-					}
+			for (const rule of rules) {
+				let regex: RegExp;
+				try {
+					regex = rule.isRegex
+						? new RegExp(rule.condition, "gi")
+						: new RegExp(this.escapeRegExp(rule.condition), "gi");
+				} catch {
+					vscode.window.showErrorMessage(
+						`Invalid regular expression: ${rule.condition}`
+					);
+					continue;
 				}
 
-				if (matchingRules.length > 0) {
+				let hasMatch = false;
+				let match;
+				while ((match = regex.exec(lineText)) !== null) {
+					hasMatch = true;
+					if (!appliedRulesSet.has(rule.condition)) {
+						matchingRules.push(rule);
+						appliedRulesSet.add(rule.condition);
+
+						if (rule.ruleType === "replacement") {
+							replacementCounts[lineNum] =
+								(replacementCounts[lineNum] || 0) + 1;
+						}
+					}
+
+					const startPos = new vscode.Position(lineNum, match.index);
+					const endPos = new vscode.Position(
+						lineNum,
+						match.index + match[0].length
+					);
+					const matchRange = new vscode.Range(startPos, endPos);
+
+					let matchDecorationType = this.matchDecorationTypes[rule.color];
+					if (!matchDecorationType) {
+						matchDecorationType = vscode.window.createTextEditorDecorationType({
+							backgroundColor: this.applyOpacityToColor(rule.color, 0.5),
+							overviewRulerColor: rule.color,
+							overviewRulerLane: vscode.OverviewRulerLane.Full,
+						});
+						this.matchDecorationTypes[rule.color] = matchDecorationType;
+					}
+
+					if (!matchDecorationOptionsMap[rule.color]) {
+						matchDecorationOptionsMap[rule.color] = [];
+					}
+					matchDecorationOptionsMap[rule.color].push({ range: matchRange });
+				}
+
+				if (hasMatch) {
 					const lineRange = line.range;
 
-					// Create indicator
-					let marginRight = 4;
-					for (const rule of matchingRules) {
-						const indicatorColor = rule.color || "gray";
-						const icon = rule.ruleType === "annotation" ? "🔍" : "✏️";
-						const colorHex = this.rgbToHex(indicatorColor);
-
-						const hoverMessage = new vscode.MarkdownString(
-							`![color](https://via.placeholder.com/10/${colorHex}/000000.png) ${icon} ${rule.condition}`
-						);
-						hoverMessage.isTrusted = true;
-
-						const indicatorOption: vscode.DecorationOptions = {
-							range: new vscode.Range(lineRange.end, lineRange.end),
-							renderOptions: {
-								after: {
-									contentText: " ",
-									backgroundColor: indicatorColor,
-									border: "1px solid black",
-									width: "10px",
-									height: "10px",
-									margin: `0 0 0 ${marginRight}px`,
-								},
-							},
-							hoverMessage: hoverMessage,
-						};
-						indicatorDecorationOptions.push(indicatorOption);
-						marginRight += 6; // Adjust margin for stacking
+					let lineDecorationType = this.lineDecorationTypes[rule.color];
+					if (!lineDecorationType) {
+						lineDecorationType = vscode.window.createTextEditorDecorationType({
+							backgroundColor: this.applyOpacityToColor(rule.color, 0.1),
+							isWholeLine: true,
+							overviewRulerColor: rule.color,
+							overviewRulerLane: vscode.OverviewRulerLane.Full,
+						});
+						this.lineDecorationTypes[rule.color] = lineDecorationType;
 					}
+
+					if (!lineDecorationOptionsMap[rule.color]) {
+						lineDecorationOptionsMap[rule.color] = [];
+					}
+					lineDecorationOptionsMap[rule.color].push({ range: lineRange });
+				}
+			}
+
+			if (matchingRules.length > 0) {
+				const lineRange = line.range;
+
+				let marginRight = 4;
+				for (const rule of matchingRules) {
+					const indicatorColor = rule.color || "gray";
+					const icon = rule.ruleType === "annotation" ? "🔍" : "✏️";
+					const colorHex = this.rgbToHex(indicatorColor);
+
+					const hoverMessage = new vscode.MarkdownString(
+						`![color](https://via.placeholder.com/10/${colorHex}/000000.png) ${icon} ${rule.condition}`
+					);
+					hoverMessage.isTrusted = true;
+
+					const indicatorOption: vscode.DecorationOptions = {
+						range: new vscode.Range(lineRange.end, lineRange.end),
+						renderOptions: {
+							after: {
+								contentText: " ",
+								backgroundColor: indicatorColor,
+								border: "1px solid black",
+								width: "10px",
+								height: "10px",
+								margin: `0 0 0 ${marginRight}px`,
+							},
+						},
+						hoverMessage: hoverMessage,
+					};
+					indicatorDecorationOptions.push(indicatorOption);
+					marginRight += 6;
 				}
 			}
 		}
 
-		// Apply line decorations
 		for (const color in lineDecorationOptionsMap) {
 			const decorationType = this.lineDecorationTypes[color];
 			const options = lineDecorationOptionsMap[color];
 			editor.setDecorations(decorationType, options);
 		}
 
-		// Apply match decorations
 		for (const color in matchDecorationOptionsMap) {
 			const decorationType = this.matchDecorationTypes[color];
 			const options = matchDecorationOptionsMap[color];
 			editor.setDecorations(decorationType, options);
 		}
 
-		// Apply warning decorations for multiple replacements
 		for (const lineNumStr in replacementCounts) {
 			const lineNum = parseInt(lineNumStr, 10);
 			if (replacementCounts[lineNum] > 1) {
@@ -1194,19 +1201,12 @@ export class RuleManager {
 		}
 		editor.setDecorations(this.warningDecorationType, warningDecorationOptions);
 
-		// Apply indicator decorations
 		editor.setDecorations(
 			this.indicatorDecorationType,
 			indicatorDecorationOptions
 		);
 	}
 
-	/**
-	 * Applies opacity to an RGBA color string.
-	 * @param color The original color string.
-	 * @param opacity The desired opacity (0 to 1).
-	 * @returns The color string with adjusted opacity.
-	 */
 	private applyOpacityToColor(color: string, opacity: number): string {
 		return color.replace(
 			/rgba\((\d+), (\d+), (\d+), [^)]+\)/,
@@ -1214,11 +1214,6 @@ export class RuleManager {
 		);
 	}
 
-	/**
-	 * Converts an RGBA color string to HEX format.
-	 * @param rgba The RGBA color string.
-	 * @returns The HEX color string.
-	 */
 	private rgbToHex(rgba: string): string {
 		const parts = rgba.match(/rgba?\((\d+), (\d+), (\d+)/);
 		if (!parts) {
@@ -1230,39 +1225,24 @@ export class RuleManager {
 		return `${r}${g}${b}`;
 	}
 
-	/**
-	 * Triggers an update of decorations with debouncing to prevent excessive processing.
-	 * @param editor The text editor to update.
-	 */
 	triggerUpdateDecorations(editor: vscode.TextEditor) {
 		if (this.updateTimeout) {
 			clearTimeout(this.updateTimeout);
 		}
 		this.updateTimeout = setTimeout(() => {
-			this.updateDecorations(editor);
-		}, 300); // Debounce delay in milliseconds
+			this.updateDecorationsWithProgress(editor);
+		}, 300);
 	}
 
-	/**
-	 * Escapes special characters in a string for use in a regular expression.
-	 * @param text The string to escape.
-	 * @returns The escaped string.
-	 */
 	private escapeRegExp(text: string): string {
 		return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	}
 
-	/**
-	 * Saves the rules to the workspace state for persistence.
-	 */
 	private async saveRules() {
 		await this.context.workspaceState.update("fileRules", this.fileRules);
 		this.outputChannel.appendLine("Rules saved.");
 	}
 
-	/**
-	 * Loads the rules from the workspace state.
-	 */
 	private loadRules() {
 		this.fileRules = this.context.workspaceState.get<FileRules>(
 			"fileRules",
@@ -1271,9 +1251,6 @@ export class RuleManager {
 		this.outputChannel.appendLine("Rules loaded.");
 	}
 
-	/**
-	 * Saves the original content to the workspace state.
-	 */
 	private async saveOriginalContent() {
 		await this.context.workspaceState.update(
 			"originalContent",
@@ -1282,9 +1259,6 @@ export class RuleManager {
 		this.outputChannel.appendLine("Original content saved.");
 	}
 
-	/**
-	 * Loads the original content from the workspace state.
-	 */
 	private loadOriginalContent() {
 		this.originalContent = this.context.workspaceState.get<OriginalContent>(
 			"originalContent",
