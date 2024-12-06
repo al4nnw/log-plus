@@ -1,8 +1,8 @@
 {
   "name": "log-plus",
-  "displayName": "log_plus",
+  "displayName": "Log Plus",
   "description": "Adds helpful features to navigate log files",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/al4nnw/log-plus.git"
@@ -16,10 +16,18 @@
   "publisher": "a4nnw",
   "activationEvents": [
     "onCommand:logViewer.manageHighlightRules",
+    "onCommand:logViewer.selectRule",
     "onCommand:logViewer.exportRules",
     "onCommand:logViewer.importRules",
     "onCommand:logViewer.revertChanges",
-    "onCommand:logViewer.convertToPlus"
+    "onCommand:logViewer.convertToPlus",
+    "onCommand:logViewer.firstOccurrence",
+    "onCommand:logViewer.lastOccurrence",
+    "onCommand:logViewer.nearestOccurrence",
+    "onCommand:logViewer.nextOccurrence",
+    "onCommand:logViewer.previousOccurrence",
+    "onView:logViewer.rulesPanel",
+    "onView:logViewer.navigation"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -27,12 +35,82 @@
       {
         "command": "logViewer.manageHighlightRules",
         "title": "Manage Highlight Rules"
+      },
+      {
+        "command": "logViewer.selectRule",
+        "title": "Select Rule"
+      },
+      {
+        "command": "logViewer.exportRules",
+        "title": "Export Rules"
+      },
+      {
+        "command": "logViewer.importRules",
+        "title": "Import Rules"
+      },
+      {
+        "command": "logViewer.revertChanges",
+        "title": "Revert Changes"
+      },
+      {
+        "command": "logViewer.convertToPlus",
+        "title": "Convert to Plus File"
+      },
+      {
+        "command": "logViewer.firstOccurrence",
+        "title": "First"
+      },
+      {
+        "command": "logViewer.lastOccurrence",
+        "title": "Last"
+      },
+      {
+        "command": "logViewer.nearestOccurrence",
+        "title": "Nearest"
+      },
+      {
+        "command": "logViewer.nextOccurrence",
+        "title": "Next"
+      },
+      {
+        "command": "logViewer.previousOccurrence",
+        "title": "Previous"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "logViewer",
+          "title": "Log Viewer",
+          "icon": "resources/activity-bar.svg"
+        }
+      ]
+    },
+    "views": {
+      "logViewer": [
+        {
+          "id": "logViewer.rulesPanel",
+          "name": "Rules"
+        },
+        {
+          "id": "logViewer.navigation",
+          "name": "Navigation"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "logViewer.selectRule",
+          "when": "view == logViewer.rulesPanel",
+          "group": "navigation"
+        }
+      ]
+    },
     "keybindings": [
       {
-        "key": "ctrl+alt+h",
         "command": "logViewer.manageHighlightRules",
+        "key": "ctrl+alt+f",
         "when": "editorTextFocus"
       }
     ]
@@ -59,15 +137,16 @@
   },
   "devDependencies": {
     "@types/mocha": "^10.0.9",
-    "@types/node": "20.x",
+    "@types/node": "^20.0.0",
     "@types/vscode": "^1.93.0",
     "@typescript-eslint/eslint-plugin": "^8.10.0",
-    "@typescript-eslint/parser": "^8.7.0",
+    "@typescript-eslint/parser": "^8.10.0",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.4.1",
     "esbuild": "^0.24.0",
     "eslint": "^9.13.0",
     "npm-run-all": "^4.1.5",
-    "typescript": "^5.6.3"
-  }
+    "typescript": "^5.2.0"
+  },
+  "dependencies": {}
 }
