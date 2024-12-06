@@ -27,12 +27,21 @@
       {
         "command": "logViewer.manageHighlightRules",
         "title": "Manage Highlight Rules"
+      },
+      {
+        "command": "logViewer.createFlameGraph",
+        "title": "Show flame graph"
       }
     ],
     "keybindings": [
       {
         "key": "ctrl+alt+h",
         "command": "logViewer.manageHighlightRules",
+        "when": "editorTextFocus"
+      },
+      {
+        "key": "ctrl+alt+f",
+        "command": "logViewer.createFlameGraph",
         "when": "editorTextFocus"
       }
     ]
