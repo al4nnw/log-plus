@@ -129,7 +129,6 @@ class NavigationButtonProvider
 				"Navigation",
 				vscode.TreeItemCollapsibleState.Expanded
 			);
-			navParent.iconPath = new ThemeIcon("compass");
 			children.push(navParent);
 
 			return Promise.resolve(children);
