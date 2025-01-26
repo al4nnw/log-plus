@@ -2,7 +2,7 @@
   "name": "log-plus",
   "displayName": "Log Plus",
   "description": "Adds helpful features to navigate log files",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/al4nnw/log-plus.git"
@@ -17,10 +17,6 @@
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
-      {
-        "command": "logViewer.manageHighlightRules",
-        "title": "Manage Highlight Rules"
-      },
       {
         "command": "logViewer.selectRule",
         "title": "Select Rule"
