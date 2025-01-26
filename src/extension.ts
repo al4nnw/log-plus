@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import { ThemeIcon } from "vscode";
 
 let selectedRuleStatusBar: vscode.StatusBarItem;
 
@@ -14,7 +15,11 @@ class OpenFileNameProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
 	private openFileName: string = "No file";
 
-	constructor(private ruleManager: RuleManager) {}
+	constructor(private ruleManager: RuleManager) {
+		this.ruleManager.onRuleChanged(() => {
+			this._onDidChangeTreeData.fire();
+		});
+	}
 
 	setOpenFileName(name: string) {
 		this.openFileName = name;
@@ -27,41 +32,49 @@ class OpenFileNameProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
 	getChildren(element?: vscode.TreeItem): Thenable<vscode.TreeItem[]> {
 		if (!element) {
-			const item = new vscode.TreeItem(
-				`Open File: ${this.openFileName}`,
-				vscode.TreeItemCollapsibleState.Expanded
-			);
-			return Promise.resolve([item]);
-		} else if (
-			typeof element.label === "string" &&
-			element.label.startsWith("Open File:")
-		) {
+			const fileName = path.basename(this.openFileName);
 			const rules = this.ruleManager.getRulesForFile(this.openFileName);
-			if (rules.length === 0) {
-				return Promise.resolve([
-					new vscode.TreeItem(
-						"No rules defined",
-						vscode.TreeItemCollapsibleState.None
-					),
-				]);
-			}
-			return Promise.resolve(
-				rules.map((rule) => {
-					const label = `${rule.condition} (Matches: ${rule.matchCount})`;
-					const item = new vscode.TreeItem(
-						label,
-						vscode.TreeItemCollapsibleState.None
-					);
-					item.command = {
-						command: "logViewer.selectRule",
-						title: "Select Rule",
-						arguments: [rule.condition],
-					};
-					return item;
-				})
+
+			const searchHeader = new vscode.TreeItem(
+				`Searching ${fileName}`,
+				vscode.TreeItemCollapsibleState.None
 			);
+			searchHeader.contextValue = "searchHeader";
+
+			return Promise.resolve([
+				searchHeader,
+				...rules.map((rule) => this.createRuleItem(rule)),
+				this.createAddRuleItem(),
+			]);
 		}
 		return Promise.resolve([]);
+	}
+
+	private createAddRuleItem(): vscode.TreeItem {
+		const item = new vscode.TreeItem("Search for...");
+		item.iconPath = new ThemeIcon("add");
+		item.command = {
+			command: "logViewer.addRule",
+			title: "Add Rule",
+		};
+		return item;
+	}
+
+	private createRuleItem(rule: Rule): vscode.TreeItem {
+		const item = new vscode.TreeItem(
+			`${rule.condition} (${rule.matchCount})`,
+			vscode.TreeItemCollapsibleState.None
+		);
+		item.iconPath = new ThemeIcon("filter");
+		item.contextValue = "rule";
+		item.description = rule.displayColor;
+		item.tooltip = `Click to select rule: ${rule.condition}`;
+		item.command = {
+			command: "logViewer.selectRule",
+			title: "Select Rule",
+			arguments: [rule.condition],
+		};
+		return item;
 	}
 }
 
@@ -69,12 +82,8 @@ class OpenFileNameProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 class NavigationButtonProvider
 	implements vscode.TreeDataProvider<vscode.TreeItem>
 {
-	private _onDidChangeTreeData: vscode.EventEmitter<
-		vscode.TreeItem | undefined | void
-	> = new vscode.EventEmitter<vscode.TreeItem | undefined | void>();
-	readonly onDidChangeTreeData: vscode.Event<
-		vscode.TreeItem | undefined | void
-	> = this._onDidChangeTreeData.event;
+	private _onDidChangeTreeData = new vscode.EventEmitter<void>();
+	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
 	private selectedRule: Rule | null = null;
 
@@ -90,7 +99,7 @@ class NavigationButtonProvider
 		});
 	}
 
-	refresh(): void {
+	refresh() {
 		this._onDidChangeTreeData.fire();
 	}
 
@@ -103,57 +112,122 @@ class NavigationButtonProvider
 			const children: vscode.TreeItem[] = [];
 
 			if (this.selectedRule) {
-				const selectedRuleItem = new vscode.TreeItem(
-					`Selected Rule: ${this.selectedRule.condition} (Matches: ${this.selectedRule.matchCount})`,
-					vscode.TreeItemCollapsibleState.None
+				// Rule actions
+				children.push(
+					this.createActionItem("Edit Search", "edit", "logViewer.editRule"),
+					this.createActionItem(
+						"Change Color",
+						"paintcan",
+						"logViewer.changeColor"
+					),
+					this.createActionItem("Delete Rule", "trash", "logViewer.deleteRule")
 				);
-				children.push(selectedRuleItem);
-			} else {
-				const selectedRuleItem = new vscode.TreeItem(
-					`Selected Rule: None`,
-					vscode.TreeItemCollapsibleState.None
-				);
-				children.push(selectedRuleItem);
 			}
 
-			// Reordered and updated navigation buttons
-			children.push(
-				this.createButton("First", "logViewer.firstOccurrence"),
-				this.createButton("Previous", "logViewer.previousOccurrence"),
-				this.createButton("Nearest", "logViewer.nearestOccurrence"),
-				this.createButton("Next", "logViewer.nextOccurrence"),
-				this.createButton("Last", "logViewer.lastOccurrence")
+			// Navigation section
+			const navParent = new vscode.TreeItem(
+				"Navigation",
+				vscode.TreeItemCollapsibleState.Expanded
 			);
+			navParent.iconPath = new ThemeIcon("compass");
+			children.push(navParent);
 
 			return Promise.resolve(children);
+		} else if (element.label === "Navigation") {
+			// Navigation buttons with updated icons
+			return Promise.resolve([
+				this.createButton("First", "logViewer.firstOccurrence", "arrow-up"),
+				this.createButton(
+					"Previous",
+					"logViewer.previousOccurrence",
+					"arrow-left"
+				),
+				this.createButton("Nearest", "logViewer.nearestOccurrence", "target"),
+				this.createButton("Next", "logViewer.nextOccurrence", "arrow-right"),
+				this.createButton("Last", "logViewer.lastOccurrence", "arrow-down"),
+			]);
 		}
-
 		return Promise.resolve([]);
 	}
 
-	private createButton(label: string, command: string): vscode.TreeItem {
+	private createButton(
+		label: string,
+		command: string,
+		icon: string
+	): vscode.TreeItem {
 		const item = new vscode.TreeItem(
 			label,
 			vscode.TreeItemCollapsibleState.None
 		);
 		item.command = { command, title: label };
-		item.iconPath = new vscode.ThemeIcon("arrow-right");
+		item.iconPath = new vscode.ThemeIcon(icon);
+		return item;
+	}
+
+	private createActionItem(
+		label: string,
+		icon: string,
+		command: string
+	): vscode.TreeItem {
+		const item = new vscode.TreeItem(
+			label,
+			vscode.TreeItemCollapsibleState.None
+		);
+		item.iconPath = new ThemeIcon(icon);
+		item.command = {
+			command: command,
+			title: label,
+			arguments: [this.selectedRule],
+		};
+		return item;
+	}
+}
+
+// TreeDataProvider for Share panel
+class SharePanelProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+	private _onDidChangeTreeData = new vscode.EventEmitter<void>();
+	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+	getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
+		return element;
+	}
+
+	getChildren(element?: vscode.TreeItem): Thenable<vscode.TreeItem[]> {
+		if (!element) {
+			// Directly return child items without a parent item
+			return Promise.resolve([
+				this.createActionItem(
+					"Export Rules",
+					"cloud-upload",
+					"logViewer.exportRules"
+				),
+				this.createActionItem(
+					"Import Rules",
+					"cloud-download",
+					"logViewer.importRules"
+				),
+			]);
+		}
+		return Promise.resolve([]);
+	}
+
+	private createActionItem(
+		label: string,
+		icon: string,
+		command: string
+	): vscode.TreeItem {
+		const item = new vscode.TreeItem(
+			label,
+			vscode.TreeItemCollapsibleState.None
+		);
+		item.iconPath = new ThemeIcon(icon);
+		item.command = { command, title: label };
 		return item;
 	}
 }
 
 export function activate(context: vscode.ExtensionContext) {
 	const ruleManager = new RuleManager(context);
-
-	// Register command to manage highlight rules
-	context.subscriptions.push(
-		vscode.commands.registerCommand(
-			"logViewer.manageHighlightRules",
-			async () => {
-				await ruleManager.manageHighlightRules();
-			}
-		)
-	);
 
 	// Create and show the selected rule status bar
 	selectedRuleStatusBar = vscode.window.createStatusBarItem(
@@ -171,6 +245,8 @@ export function activate(context: vscode.ExtensionContext) {
 			async (ruleName: string) => {
 				selectedRuleStatusBar.text = `Selected Rule: ${ruleName}`;
 				await ruleManager.selectRule(ruleName);
+				// Refresh the navigation panel
+				navigationButtonProvider.refresh();
 			}
 		)
 	);
@@ -191,19 +267,6 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand("logViewer.revertChanges", async () => {
 			await ruleManager.revertChanges();
-		})
-	);
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand("logViewer.convertToPlus", async () => {
-			await ruleManager.convertToPlusFile();
-		})
-	);
-
-	// Handle file open events
-	context.subscriptions.push(
-		vscode.workspace.onDidOpenTextDocument(async (document) => {
-			await ruleManager.handleFileOpen(document);
 		})
 	);
 
@@ -231,7 +294,7 @@ export function activate(context: vscode.ExtensionContext) {
 		ruleManager.triggerUpdateDecorations(vscode.window.activeTextEditor);
 	}
 
-	// Register TreeDataProviders
+	// Register a single TreeDataProvider
 	const openFileNameProvider = new OpenFileNameProvider(ruleManager);
 	vscode.window.registerTreeDataProvider(
 		"logViewer.rulesPanel",
@@ -298,6 +361,208 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Step 3: Enable/Disable navigation buttons based on rule selection
 	// (Handled within NavigationButtonProvider based on RuleManager events)
+
+	// Register new commands
+	context.subscriptions.push(
+		vscode.commands.registerCommand("logViewer.addRule", async () => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor) return;
+
+			const searchTerm = await vscode.window.showInputBox({
+				prompt: "Enter search term or pattern",
+				placeHolder: "Search term (add /slashes/ for regex)",
+				title: "New Highlight Rule",
+			});
+
+			if (searchTerm) {
+				const isRegex = searchTerm.startsWith("/") && searchTerm.endsWith("/");
+				const condition = isRegex ? searchTerm.slice(1, -1) : searchTerm;
+				const fileUri = editor.document.uri.toString();
+
+				// Get random color
+				const colors = ruleManager.predefinedColors;
+				const usedColors = ruleManager
+					.getRulesForFile(fileUri)
+					.map((r) => r.color);
+				const availableColors = colors.filter(
+					(c) => !usedColors.includes(c.value)
+				);
+				const randomColor =
+					availableColors.length > 0
+						? availableColors[
+								Math.floor(Math.random() * availableColors.length)
+						  ]
+						: colors[Math.floor(Math.random() * colors.length)];
+
+				const newRule: Rule = {
+					condition: condition,
+					color: randomColor.value,
+					displayColor: randomColor.display,
+					isRegex: isRegex,
+					ruleType: "annotation",
+					matchCount: 0,
+				};
+
+				if (!ruleManager.fileRules[fileUri]) {
+					ruleManager.fileRules[fileUri] = [];
+				}
+				ruleManager.fileRules[fileUri].push(newRule);
+				await ruleManager.saveRules();
+				ruleManager.triggerUpdateDecorations(editor);
+				ruleManager.ruleChangedEmitter.fire();
+				openFileNameProvider.setOpenFileName(editor.document.uri.toString());
+			}
+		}),
+
+		vscode.commands.registerCommand(
+			"logViewer.editRule",
+			async (rule: Rule) => {
+				const newCondition = await vscode.window.showInputBox({
+					prompt: "Edit rule pattern",
+					value: rule.condition,
+					placeHolder: "Enter new pattern",
+				});
+
+				// Check if the new condition is empty
+				if (newCondition === undefined || newCondition.trim() === "") {
+					vscode.window.showWarningMessage("Rule condition cannot be empty.");
+					return;
+				}
+
+				rule.condition = newCondition;
+				await ruleManager.saveRules();
+				ruleManager.triggerUpdateDecorations(vscode.window.activeTextEditor!);
+			}
+		),
+
+		vscode.commands.registerCommand(
+			"logViewer.changeColor",
+			async (rule: Rule) => {
+				const colorPick = await vscode.window.showQuickPick(
+					ruleManager.predefinedColors.map((c) => c.display),
+					{ placeHolder: "Select new color" }
+				);
+				if (colorPick) {
+					const colorObj = ruleManager.predefinedColors.find(
+						(c) => c.display === colorPick
+					);
+					if (colorObj) {
+						rule.color = colorObj.value;
+						rule.displayColor = colorObj.display;
+						await ruleManager.saveRules();
+						ruleManager.triggerUpdateDecorations(
+							vscode.window.activeTextEditor!
+						);
+					}
+				}
+			}
+		),
+
+		vscode.commands.registerCommand(
+			"logViewer.deleteRule",
+			async (rule: Rule) => {
+				const editor = vscode.window.activeTextEditor!;
+				const fileUri = editor.document.uri.toString();
+				ruleManager.fileRules[fileUri] = ruleManager.fileRules[fileUri].filter(
+					(r) => r !== rule
+				);
+				await ruleManager.saveRules();
+				ruleManager.triggerUpdateDecorations(editor);
+
+				// Refresh views
+				openFileNameProvider.setOpenFileName(fileUri);
+				navigationButtonProvider.refresh();
+
+				// Select first rule if available
+				const rules = ruleManager.getRulesForFile(fileUri);
+				if (rules.length > 0) {
+					await vscode.commands.executeCommand(
+						"logViewer.selectRule",
+						rules[0].condition
+					);
+				} else {
+					await vscode.commands.executeCommand("logViewer.deselectRule");
+				}
+			}
+		),
+
+		vscode.commands.registerCommand("logViewer.deselectRule", async () => {
+			selectedRuleStatusBar.text = "Selected Rule: None";
+			ruleManager.deselectRule();
+			// Refresh the navigation panel
+			navigationButtonProvider.refresh();
+		}),
+
+		vscode.commands.registerCommand("logViewer.addSelectedText", async () => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor) return;
+
+			const fileUri = editor.document.uri.toString();
+
+			const selection = editor.selection;
+			if (selection.isEmpty) {
+				vscode.window.showWarningMessage("No text selected");
+				return;
+			}
+
+			const selectedText = editor.document.getText(selection);
+			const colors = ruleManager.predefinedColors;
+			const usedColors = ruleManager
+				.getRulesForFile(fileUri)
+				.map((r) => r.color);
+			const availableColors = colors.filter(
+				(c) => !usedColors.includes(c.value)
+			);
+			const randomColor =
+				availableColors.length > 0
+					? availableColors[Math.floor(Math.random() * availableColors.length)]
+					: colors[Math.floor(Math.random() * colors.length)];
+
+			const newRule: Rule = {
+				condition: selectedText,
+				color: randomColor.value,
+				displayColor: randomColor.display,
+				isRegex: false,
+				ruleType: "annotation",
+				matchCount: 0,
+			};
+
+			if (!ruleManager.fileRules[fileUri]) {
+				ruleManager.fileRules[fileUri] = [];
+			}
+			ruleManager.fileRules[fileUri].push(newRule);
+			await ruleManager.saveRules();
+			ruleManager.triggerUpdateDecorations(editor);
+
+			// Refresh views
+			openFileNameProvider.setOpenFileName(fileUri);
+			navigationButtonProvider.refresh();
+		}),
+
+		vscode.commands.registerCommand("logViewer.refreshRules", async () => {
+			const editor = vscode.window.activeTextEditor;
+			if (editor) {
+				ruleManager.triggerUpdateDecorations(editor);
+
+				if (ruleManager.selectedRule) {
+					ruleManager.currentMatches = ruleManager.findOccurrences(
+						ruleManager.selectedRule,
+						editor.document
+					);
+					ruleManager.currentIndex = -1;
+				}
+
+				openFileNameProvider.setOpenFileName(editor.document.uri.toString());
+			}
+		})
+	);
+
+	// Register the new SharePanelProvider
+	const sharePanelProvider = new SharePanelProvider();
+	vscode.window.registerTreeDataProvider(
+		"logViewer.sharePanel",
+		sharePanelProvider
+	);
 }
 
 export function deactivate() {
@@ -323,73 +588,72 @@ interface OriginalContent {
 }
 
 export class RuleManager {
-	private fileRules: FileRules = {};
-	private originalContent: OriginalContent = {};
-	private lineDecorationTypes: {
+	fileRules: FileRules = {};
+	originalContent: OriginalContent = {};
+	lineDecorationTypes: {
 		[color: string]: vscode.TextEditorDecorationType;
 	} = {};
-	private matchDecorationTypes: {
+	matchDecorationTypes: {
 		[color: string]: vscode.TextEditorDecorationType;
 	} = {};
-	private indicatorDecorationType: vscode.TextEditorDecorationType;
-	private warningDecorationType: vscode.TextEditorDecorationType;
-	private updateTimeout: NodeJS.Timeout | undefined = undefined;
-	private context: vscode.ExtensionContext;
-	private predefinedColors: { name: string; value: string; display: string }[] =
-		[
-			{ name: "Yellow", value: "rgba(255, 255, 0, 1)", display: "Yellow" },
-			{
-				name: "LightGreen",
-				value: "rgba(144, 238, 144, 1)",
-				display: "Light Green",
-			},
-			{
-				name: "LightCoral",
-				value: "rgba(240, 128, 128, 1)",
-				display: "Light Coral",
-			},
-			{
-				name: "LightBlue",
-				value: "rgba(173, 216, 230, 1)",
-				display: "Light Blue",
-			},
-			{ name: "Khaki", value: "rgba(240, 230, 140, 1)", display: "Khaki" },
-			{ name: "Plum", value: "rgba(221, 160, 221, 1)", display: "Plum" },
-			{
-				name: "LightSalmon",
-				value: "rgba(255, 160, 122, 1)",
-				display: "Light Salmon",
-			},
-			{
-				name: "MediumAquamarine",
-				value: "rgba(102, 205, 170, 1)",
-				display: "Medium Aquamarine",
-			},
-			{
-				name: "PaleTurquoise",
-				value: "rgba(175, 238, 238, 1)",
-				display: "Pale Turquoise",
-			},
-			{
-				name: "MistyRose",
-				value: "rgba(255, 228, 225, 1)",
-				display: "Misty Rose",
-			},
-		];
+	indicatorDecorationType: vscode.TextEditorDecorationType;
+	warningDecorationType: vscode.TextEditorDecorationType;
+	updateTimeout: NodeJS.Timeout | undefined = undefined;
+	context: vscode.ExtensionContext;
+	predefinedColors: { name: string; value: string; display: string }[] = [
+		{ name: "Yellow", value: "rgba(255, 255, 0, 1)", display: "Yellow" },
+		{
+			name: "LightGreen",
+			value: "rgba(144, 238, 144, 1)",
+			display: "Light Green",
+		},
+		{
+			name: "LightCoral",
+			value: "rgba(240, 128, 128, 1)",
+			display: "Light Coral",
+		},
+		{
+			name: "LightBlue",
+			value: "rgba(173, 216, 230, 1)",
+			display: "Light Blue",
+		},
+		{ name: "Khaki", value: "rgba(240, 230, 140, 1)", display: "Khaki" },
+		{ name: "Plum", value: "rgba(221, 160, 221, 1)", display: "Plum" },
+		{
+			name: "LightSalmon",
+			value: "rgba(255, 160, 122, 1)",
+			display: "Light Salmon",
+		},
+		{
+			name: "MediumAquamarine",
+			value: "rgba(102, 205, 170, 1)",
+			display: "Medium Aquamarine",
+		},
+		{
+			name: "PaleTurquoise",
+			value: "rgba(175, 238, 238, 1)",
+			display: "Pale Turquoise",
+		},
+		{
+			name: "MistyRose",
+			value: "rgba(255, 228, 225, 1)",
+			display: "Misty Rose",
+		},
+	];
 
-	private outputChannel: vscode.OutputChannel;
+	outputChannel: vscode.OutputChannel;
 
-	private currentMatches: vscode.Range[] = [];
-	private currentIndex: number = -1;
-	private ruleSelectedEmitter: vscode.EventEmitter<void> =
+	currentMatches: vscode.Range[] = [];
+	currentIndex: number = -1;
+	ruleSelectedEmitter: vscode.EventEmitter<void> =
 		new vscode.EventEmitter<void>();
-	private ruleDeselectedEmitter: vscode.EventEmitter<void> =
+	ruleDeselectedEmitter: vscode.EventEmitter<void> =
 		new vscode.EventEmitter<void>();
 
-	private selectedRule: Rule | null = null;
+	selectedRule: Rule | null = null;
 
 	// Inside the RuleManager class, add a new EventEmitter for rule changes
-	private ruleChangedEmitter: vscode.EventEmitter<void> =
+	ruleChangedEmitter: vscode.EventEmitter<void> =
 		new vscode.EventEmitter<void>();
 	public readonly onRuleChanged: vscode.Event<void> =
 		this.ruleChangedEmitter.event;
@@ -432,125 +696,6 @@ export class RuleManager {
 	 */
 	public getSelectedRule(): Rule | null {
 		return this.selectedRule;
-	}
-
-	/**
-	 * Handles file open events to prompt for duplication.
-	 * @param document The text document that was opened.
-	 */
-	public async handleFileOpen(document: vscode.TextDocument) {
-		const filePath = document.uri.fsPath;
-
-		// Ignore untitled or non-file URIs
-		if (document.isUntitled || document.uri.scheme !== "file") {
-			return;
-		}
-
-		// Check if it's already a "-plus" file
-		if (filePath.endsWith("-plus" + path.extname(filePath))) {
-			return;
-		}
-
-		// Prompt the user to duplicate the file
-		const duplicate = await vscode.window.showInformationMessage(
-			"Do you want to work on a duplicate of this file to avoid modifying the original?",
-			"Yes",
-			"No"
-		);
-
-		if (duplicate === "Yes") {
-			await this.convertToPlusFile(document);
-		}
-	}
-
-	/**
-	 * Converts the current file into a "-plus" version.
-	 * @param document Optional text document to convert.
-	 */
-	public async convertToPlusFile(document?: vscode.TextDocument) {
-		const editor = vscode.window.activeTextEditor;
-		if (!editor) {
-			vscode.window.showErrorMessage("No active editor found.");
-			return;
-		}
-
-		document = document || editor.document;
-		const filePath = document.uri.fsPath;
-
-		// Check if it's already a "-plus" file
-		if (filePath.endsWith("-plus" + path.extname(filePath))) {
-			vscode.window.showInformationMessage(
-				'This file is already a "-plus" file.'
-			);
-			return;
-		}
-
-		const newFilePath = this.getPlusFilePath(filePath);
-
-		try {
-			// Check if the file already exists
-			let proceed = true;
-			try {
-				await vscode.workspace.fs.stat(vscode.Uri.file(newFilePath));
-				// File exists
-				const overwrite = await vscode.window.showWarningMessage(
-					"The duplicate file already exists. Do you want to overwrite it?",
-					"Yes",
-					"No"
-				);
-				if (overwrite !== "Yes") {
-					proceed = false;
-				}
-			} catch {
-				// File does not exist, proceed
-			}
-
-			if (proceed) {
-				// Copy the file
-				await vscode.workspace.fs.copy(
-					vscode.Uri.file(filePath),
-					vscode.Uri.file(newFilePath),
-					{ overwrite: true }
-				);
-				// Open the new file
-				const newDocument = await vscode.workspace.openTextDocument(
-					newFilePath
-				);
-				await vscode.window.showTextDocument(newDocument);
-
-				// Copy the rules from the original file to the new file
-				const originalFileUri = document.uri.toString();
-				const newFileUri = newDocument.uri.toString();
-
-				if (this.fileRules[originalFileUri]) {
-					this.fileRules[newFileUri] = this.fileRules[originalFileUri];
-					await this.saveRules();
-					this.triggerUpdateDecorations(vscode.window.activeTextEditor!);
-				}
-
-				this.outputChannel.appendLine(
-					`Converted ${filePath} to ${newFilePath}`
-				);
-			}
-		} catch (error) {
-			vscode.window.showErrorMessage(
-				"Failed to create duplicate file: " + (error as Error).message
-			);
-			this.outputChannel.appendLine("Error converting file: " + error);
-		}
-	}
-
-	/**
-	 * Gets the file path with "-plus" suffix.
-	 * @param filePath The original file path.
-	 * @returns The new file path with "-plus" suffix.
-	 */
-	private getPlusFilePath(filePath: string): string {
-		const dir = path.dirname(filePath);
-		const ext = path.extname(filePath);
-		const baseName = path.basename(filePath, ext);
-		const newFileName = `${baseName}-plus${ext}`;
-		return path.join(dir, newFileName);
 	}
 
 	/**
@@ -607,8 +752,6 @@ export class RuleManager {
 			} else if (selection.label === "Export Rules") {
 				await this.exportRules();
 			} else if (selection.label === 'Convert to "-plus"') {
-				await this.convertToPlusFile();
-			} else if (selection.label === "Revert Changes") {
 				await this.revertChanges();
 			} else {
 				// User selected a rule
@@ -711,10 +854,7 @@ export class RuleManager {
 	 * @param document The text document.
 	 * @returns An array of ranges where the rule matches.
 	 */
-	private findOccurrences(
-		rule: Rule,
-		document: vscode.TextDocument
-	): vscode.Range[] {
+	findOccurrences(rule: Rule, document: vscode.TextDocument): vscode.Range[] {
 		const occurrences: vscode.Range[] = [];
 		const regex = rule.isRegex
 			? new RegExp(rule.condition, "gi")
@@ -747,7 +887,7 @@ export class RuleManager {
 	 * @param rule The rule to edit.
 	 * @param editor The active text editor.
 	 */
-	private async editRule(rule: Rule, editor: vscode.TextEditor) {
+	async editRule(rule: Rule, editor: vscode.TextEditor) {
 		while (true) {
 			const editOptions = [
 				"Change Condition",
@@ -1296,7 +1436,12 @@ export class RuleManager {
 			increment?: number;
 		}>
 	) {
+		// Reset match counts before processing
 		const fileUri = editor.document.uri.toString();
+		if (this.fileRules[fileUri]) {
+			this.fileRules[fileUri].forEach((rule) => (rule.matchCount = 0));
+		}
+
 		const rules = this.fileRules[fileUri];
 
 		// Clear decorations if no rules
@@ -1347,6 +1492,7 @@ export class RuleManager {
 
 			const matchingRules: Rule[] = [];
 			const appliedRulesSet = new Set<string>();
+			const lineRulesSet = new Set<string>(); // Track rules that already contributed to this line
 
 			for (const rule of rules) {
 				let regex: RegExp;
@@ -1368,6 +1514,9 @@ export class RuleManager {
 					if (!appliedRulesSet.has(rule.condition)) {
 						matchingRules.push(rule);
 						appliedRulesSet.add(rule.condition);
+
+						// Increment match count for the rule
+						rule.matchCount++;
 
 						if (rule.ruleType === "replacement") {
 							replacementCounts[lineNum] =
@@ -1397,59 +1546,36 @@ export class RuleManager {
 					}
 					matchDecorationOptionsMap[rule.color].push({ range: matchRange });
 				}
-
-				if (hasMatch) {
-					const lineRange = line.range;
-
-					let lineDecorationType = this.lineDecorationTypes[rule.color];
-					if (!lineDecorationType) {
-						lineDecorationType = vscode.window.createTextEditorDecorationType({
-							backgroundColor: this.applyOpacityToColor(rule.color, 0.1),
-							isWholeLine: true,
-							overviewRulerColor: rule.color,
-							overviewRulerLane: vscode.OverviewRulerLane.Full,
-						});
-						this.lineDecorationTypes[rule.color] = lineDecorationType;
-					}
-
-					if (!lineDecorationOptionsMap[rule.color]) {
-						lineDecorationOptionsMap[rule.color] = [];
-					}
-					lineDecorationOptionsMap[rule.color].push({ range: lineRange });
-				}
 			}
 
-			if (matchingRules.length > 0) {
-				const lineRange = line.range;
+			// After processing all rules for the line, add indicators
+			const uniqueRules = Array.from(
+				new Set(matchingRules.map((r) => r.condition))
+			);
+			let marginRight = 4;
 
-				let marginRight = 4;
-				for (const rule of matchingRules) {
-					const indicatorColor = rule.color || "gray";
-					const icon = rule.ruleType === "annotation" ? "🔍" : "✏️";
-					const colorHex = this.rgbToHex(indicatorColor);
+			for (const ruleCondition of uniqueRules) {
+				const rule = matchingRules.find((r) => r.condition === ruleCondition);
+				if (!rule) continue;
 
-					const hoverMessage = new vscode.MarkdownString(
-						`![color](https://via.placeholder.com/10/${colorHex}/000000.png) ${icon} ${rule.condition}`
-					);
-					hoverMessage.isTrusted = true;
+				const indicatorColor = rule.color || "gray";
+				const colorHex = this.rgbToHex(indicatorColor);
 
-					const indicatorOption: vscode.DecorationOptions = {
-						range: new vscode.Range(lineRange.end, lineRange.end),
-						renderOptions: {
-							after: {
-								contentText: " ",
-								backgroundColor: indicatorColor,
-								border: "1px solid black",
-								width: "10px",
-								height: "10px",
-								margin: `0 0 0 ${marginRight}px`,
-							},
+				const indicatorOption: vscode.DecorationOptions = {
+					range: new vscode.Range(line.range.end, line.range.end),
+					renderOptions: {
+						after: {
+							contentText: " ",
+							backgroundColor: indicatorColor,
+							border: "1px solid black",
+							width: "10px",
+							height: "10px",
+							margin: `0 0 0 ${marginRight}px`,
 						},
-						hoverMessage: hoverMessage,
-					};
-					indicatorDecorationOptions.push(indicatorOption);
-					marginRight += 6;
-				}
+					},
+				};
+				indicatorDecorationOptions.push(indicatorOption);
+				marginRight += 6;
 			}
 		}
 
@@ -1468,10 +1594,9 @@ export class RuleManager {
 		for (const lineNumStr in replacementCounts) {
 			const lineNum = parseInt(lineNumStr, 10);
 			if (replacementCounts[lineNum] > 1) {
-				const lineRange = editor.document.lineAt(lineNum).range;
+				const line = editor.document.lineAt(lineNum);
 				const warningOption: vscode.DecorationOptions = {
-					range: new vscode.Range(lineRange.end, lineRange.end),
-					hoverMessage: "Multiple replacements applied to this line.",
+					range: new vscode.Range(line.range.end, line.range.end),
 				};
 				warningDecorationOptions.push(warningOption);
 			}
@@ -1515,12 +1640,12 @@ export class RuleManager {
 		return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	}
 
-	private async saveRules() {
+	async saveRules() {
 		await this.context.workspaceState.update("fileRules", this.fileRules);
 		this.outputChannel.appendLine("Rules saved.");
 	}
 
-	private loadRules() {
+	loadRules() {
 		this.fileRules = this.context.workspaceState.get<FileRules>(
 			"fileRules",
 			{}
@@ -1528,7 +1653,7 @@ export class RuleManager {
 		this.outputChannel.appendLine("Rules loaded.");
 	}
 
-	private async saveOriginalContent() {
+	async saveOriginalContent() {
 		await this.context.workspaceState.update(
 			"originalContent",
 			this.originalContent

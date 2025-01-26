@@ -14,21 +14,6 @@
     "Visualization"
   ],
   "publisher": "a4nnw",
-  "activationEvents": [
-    "onCommand:logViewer.manageHighlightRules",
-    "onCommand:logViewer.selectRule",
-    "onCommand:logViewer.exportRules",
-    "onCommand:logViewer.importRules",
-    "onCommand:logViewer.revertChanges",
-    "onCommand:logViewer.convertToPlus",
-    "onCommand:logViewer.firstOccurrence",
-    "onCommand:logViewer.lastOccurrence",
-    "onCommand:logViewer.nearestOccurrence",
-    "onCommand:logViewer.nextOccurrence",
-    "onCommand:logViewer.previousOccurrence",
-    "onView:logViewer.rulesPanel",
-    "onView:logViewer.navigation"
-  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -75,6 +60,26 @@
       {
         "command": "logViewer.previousOccurrence",
         "title": "Previous"
+      },
+      {
+        "command": "logViewer.addRule",
+        "title": "Add New Rule",
+        "icon": "$(search)"
+      },
+      {
+        "command": "logViewer.changeColor",
+        "title": "Change Color",
+        "icon": "$(paintcan)"
+      },
+      {
+        "command": "logViewer.addSelectedText",
+        "title": "Add Selected Text as Rule",
+        "icon": "$(text-size)"
+      },
+      {
+        "command": "logViewer.refreshRules",
+        "title": "Refresh Rule Counts",
+        "icon": "$(refresh)"
       }
     ],
     "viewsContainers": {
@@ -90,18 +95,34 @@
       "logViewer": [
         {
           "id": "logViewer.rulesPanel",
-          "name": "Rules"
+          "name": "Searching"
         },
         {
           "id": "logViewer.navigation",
-          "name": "Navigation"
+          "name": "Options"
+        },
+        {
+          "id": "logViewer.sharePanel",
+          "name": "SHARE"
+        }
+      ],
+      "explorer": [
+        {
+          "id": "logViewer.ruleManager",
+          "name": "Log Rules"
         }
       ]
     },
     "menus": {
-      "view/item/context": [
+      "view/item/context": [],
+      "view/title": [
         {
-          "command": "logViewer.selectRule",
+          "command": "logViewer.addRule",
+          "when": "view == logViewer.rulesPanel",
+          "group": "navigation"
+        },
+        {
+          "command": "logViewer.refreshRules",
           "when": "view == logViewer.rulesPanel",
           "group": "navigation"
         }
@@ -109,7 +130,7 @@
     },
     "keybindings": [
       {
-        "command": "logViewer.manageHighlightRules",
+        "command": "logViewer.addSelectedText",
         "key": "ctrl+alt+f",
         "when": "editorTextFocus"
       }
