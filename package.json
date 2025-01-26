@@ -2,7 +2,7 @@
   "name": "log-plus",
   "displayName": "Log Plus",
   "description": "Adds helpful features to navigate log files",
-  "version": "3.0.4",
+  "version": "3.1.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/al4nnw/log-plus.git"
@@ -126,7 +126,16 @@
         "key": "ctrl+alt+f",
         "when": "editorTextFocus"
       }
-    ]
+    ],
+    "configuration": {
+      "properties": {
+        "logPlus.maxRules": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum number of active rules"
+        }
+      }
+    }
   },
   "galleryBanner": {
     "color": "#007ACC",

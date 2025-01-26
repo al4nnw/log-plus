@@ -394,6 +394,8 @@ export function activate(context: vscode.ExtensionContext) {
 					displayColor: randomColor.display,
 					isRegex: isRegex,
 					matchCount: 0,
+					_compiled: undefined,
+					_dirty: true,
 				};
 
 				if (!ruleManager.fileRules[fileUri]) {
@@ -443,6 +445,7 @@ export function activate(context: vscode.ExtensionContext) {
 						rule.color = colorObj.value;
 						rule.displayColor = colorObj.display;
 						await ruleManager.saveRules();
+						rule._dirty = true;
 						ruleManager.triggerUpdateDecorations(
 							vscode.window.activeTextEditor!
 						);
@@ -517,6 +520,8 @@ export function activate(context: vscode.ExtensionContext) {
 				displayColor: randomColor.display,
 				isRegex: false,
 				matchCount: 0,
+				_compiled: undefined,
+				_dirty: true,
 			};
 
 			if (!ruleManager.fileRules[fileUri]) {
@@ -537,7 +542,7 @@ export function activate(context: vscode.ExtensionContext) {
 				ruleManager.triggerUpdateDecorations(editor);
 
 				if (ruleManager.selectedRule) {
-					ruleManager.currentMatches = ruleManager.findOccurrences(
+					ruleManager.currentMatches = await ruleManager.findOccurrences(
 						ruleManager.selectedRule,
 						editor.document
 					);
@@ -567,6 +572,8 @@ interface Rule {
 	displayColor: string;
 	isRegex: boolean;
 	matchCount: number;
+	_compiled?: RegExp;
+	_dirty?: boolean;
 }
 
 interface FileRules {
@@ -642,6 +649,27 @@ export class RuleManager {
 	public readonly onRuleChanged: vscode.Event<void> =
 		this.ruleChangedEmitter.event;
 
+	// Add precompiled regex cache
+	private regexCache: Map<string, RegExp> = new Map();
+
+	private getCachedRegex(rule: Rule): RegExp {
+		if (!rule._compiled || rule._dirty) {
+			rule._compiled = rule.isRegex
+				? new RegExp(rule.condition, "gi")
+				: new RegExp(this.escapeRegExp(rule.condition), "gi");
+			rule._dirty = false;
+		}
+		return rule._compiled;
+	}
+
+	// Add method to clear cache when rules change
+	private clearRegexCache() {
+		this.regexCache.clear();
+	}
+
+	// Add class property to track current update
+	private currentUpdatePromise: Promise<void> | null = null;
+
 	constructor(context: vscode.ExtensionContext) {
 		this.context = context;
 
@@ -677,28 +705,36 @@ export class RuleManager {
 	 * @param document The text document.
 	 * @returns An array of ranges where the rule matches.
 	 */
-	findOccurrences(rule: Rule, document: vscode.TextDocument): vscode.Range[] {
+	async findOccurrences(
+		rule: Rule,
+		document: vscode.TextDocument
+	): Promise<vscode.Range[]> {
 		const occurrences: vscode.Range[] = [];
-		const regex = rule.isRegex
-			? new RegExp(rule.condition, "gi")
-			: new RegExp(this.escapeRegExp(rule.condition), "gi");
+		const regex = this.getCachedRegex(rule);
+		const text = document.getText();
+		let match;
 
-		rule.matchCount = 0; // Reset matchCount before counting
+		// Reset match count
+		rule.matchCount = 0;
 
-		for (let lineNum = 0; lineNum < document.lineCount; lineNum++) {
-			const line = document.lineAt(lineNum);
-			const lineText = line.text;
+		// Process in batches to avoid blocking the UI
+		const batchSize = 1000;
+		let position = 0;
 
-			let match;
-			while ((match = regex.exec(lineText)) !== null) {
-				rule.matchCount += 1; // Increment matchCount
-				const startPos = new vscode.Position(lineNum, match.index);
-				const endPos = new vscode.Position(
-					lineNum,
-					match.index + match[0].length
-				);
-				const matchRange = new vscode.Range(startPos, endPos);
-				occurrences.push(matchRange);
+		while ((match = regex.exec(text)) !== null) {
+			// Prevent infinite loops from zero-length matches
+			if (match.index === regex.lastIndex) {
+				regex.lastIndex++;
+			}
+
+			const startPos = document.positionAt(match.index);
+			const endPos = document.positionAt(match.index + match[0].length);
+			occurrences.push(new vscode.Range(startPos, endPos));
+			rule.matchCount++;
+
+			// Yield to event loop every batchSize matches
+			if (rule.matchCount % batchSize === 0) {
+				await new Promise((resolve) => setTimeout(resolve, 0));
 			}
 		}
 
@@ -822,15 +858,29 @@ export class RuleManager {
 	 * @param editor The text editor to update.
 	 */
 	private async updateDecorationsWithProgress(editor: vscode.TextEditor) {
-		await vscode.window.withProgress(
-			{
-				location: vscode.ProgressLocation.Window,
-				title: "Applying rules...",
-			},
-			async (progress) => {
-				await this.updateDecorations(editor, progress);
-			}
-		);
+		const MAX_PROCESSING_TIME = 30000;
+		try {
+			await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Window,
+					title: "Applying rules...",
+				},
+				async (progress) => {
+					await Promise.race([
+						this.updateDecorations(editor, progress),
+						new Promise((_, reject) =>
+							setTimeout(
+								() => reject("Processing timed out"),
+								MAX_PROCESSING_TIME
+							)
+						),
+					]);
+				}
+			);
+		} catch (error) {
+			this.outputChannel.appendLine(`Error applying rules: ${error}`);
+			vscode.window.showErrorMessage(`Rule application failed: ${error}`);
+		}
 	}
 
 	/**
@@ -841,11 +891,13 @@ export class RuleManager {
 	 */
 	private async updateDecorations(
 		editor: vscode.TextEditor,
-		progress?: vscode.Progress<{
-			message?: string;
-			increment?: number;
-		}>
+		progress?: vscode.Progress<{ message?: string; increment?: number }>
 	) {
+		const startTime = Date.now();
+		// Batch processing parameters
+		const BATCH_SIZE = 500;
+		const YIELD_INTERVAL = 50;
+
 		// Reset match counts before processing
 		const fileUri = editor.document.uri.toString();
 		if (this.fileRules[fileUri]) {
@@ -883,100 +935,105 @@ export class RuleManager {
 		} = {};
 
 		const lineCount = editor.document.lineCount;
+		let processedLines = 0;
 
-		for (let lineNum = 0; lineNum < lineCount; lineNum++) {
-			const line = editor.document.lineAt(lineNum);
-			const lineText = line.text;
+		while (processedLines < lineCount) {
+			const batchEnd = Math.min(processedLines + BATCH_SIZE, lineCount);
 
-			// Update progress
-			if (progress && lineNum % 50 === 0) {
-				progress.report({
-					message: `Processing line ${lineNum + 1} of ${lineCount}`,
-					increment: (lineNum / lineCount) * 100,
-				});
-			}
+			for (let lineNum = processedLines; lineNum < batchEnd; lineNum++) {
+				const line = editor.document.lineAt(lineNum);
+				const lineText = line.text;
 
-			const matchingRules: Rule[] = [];
-			const appliedRulesSet = new Set<string>();
-			const lineRulesSet = new Set<string>(); // Track rules that already contributed to this line
+				const matchingRules: Rule[] = [];
+				const appliedRulesSet = new Set<string>();
+				const lineRulesSet = new Set<string>(); // Track rules that already contributed to this line
 
-			for (const rule of rules) {
-				let regex: RegExp;
-				try {
-					regex = rule.isRegex
-						? new RegExp(rule.condition, "gi")
-						: new RegExp(this.escapeRegExp(rule.condition), "gi");
-				} catch {
-					vscode.window.showErrorMessage(
-						`Invalid regular expression: ${rule.condition}`
-					);
-					continue;
+				for (const rule of rules) {
+					let regex = this.getCachedRegex(rule);
+					let hasMatch = false;
+					let match;
+					while ((match = regex.exec(lineText)) !== null) {
+						// Prevent infinite loops from zero-length matches
+						if (match.index === regex.lastIndex) {
+							regex.lastIndex++;
+						}
+
+						hasMatch = true;
+						if (!appliedRulesSet.has(rule.condition)) {
+							matchingRules.push(rule);
+							appliedRulesSet.add(rule.condition);
+							rule.matchCount++;
+						}
+
+						// Process each match individually
+						const startPos = new vscode.Position(lineNum, match.index);
+						const endPos = new vscode.Position(
+							lineNum,
+							match.index + match[0].length
+						);
+						const matchRange = new vscode.Range(startPos, endPos);
+
+						// Add match decoration
+						let matchDecorationType = this.matchDecorationTypes[rule.color];
+						if (!matchDecorationType) {
+							matchDecorationType =
+								vscode.window.createTextEditorDecorationType({
+									backgroundColor: this.applyOpacityToColor(rule.color, 0.5),
+									overviewRulerColor: rule.color,
+									overviewRulerLane: vscode.OverviewRulerLane.Full,
+								});
+							this.matchDecorationTypes[rule.color] = matchDecorationType;
+						}
+
+						if (!matchDecorationOptionsMap[rule.color]) {
+							matchDecorationOptionsMap[rule.color] = [];
+						}
+						matchDecorationOptionsMap[rule.color].push({ range: matchRange });
+					}
 				}
 
-				let hasMatch = false;
-				let match;
-				while ((match = regex.exec(lineText)) !== null) {
-					hasMatch = true;
-					if (!appliedRulesSet.has(rule.condition)) {
-						matchingRules.push(rule);
-						appliedRulesSet.add(rule.condition);
+				// After processing all rules for the line, add indicators
+				const uniqueRules = Array.from(
+					new Set(matchingRules.map((r) => r.condition))
+				);
+				let marginRight = 4;
 
-						// Increment match count for the rule
-						rule.matchCount++;
-					}
+				for (const ruleCondition of uniqueRules) {
+					const rule = matchingRules.find((r) => r.condition === ruleCondition);
+					if (!rule) continue;
 
-					const startPos = new vscode.Position(lineNum, match.index);
-					const endPos = new vscode.Position(
-						lineNum,
-						match.index + match[0].length
-					);
-					const matchRange = new vscode.Range(startPos, endPos);
+					const indicatorColor = rule.color || "gray";
+					const colorHex = this.rgbToHex(indicatorColor);
 
-					let matchDecorationType = this.matchDecorationTypes[rule.color];
-					if (!matchDecorationType) {
-						matchDecorationType = vscode.window.createTextEditorDecorationType({
-							backgroundColor: this.applyOpacityToColor(rule.color, 0.5),
-							overviewRulerColor: rule.color,
-							overviewRulerLane: vscode.OverviewRulerLane.Full,
-						});
-						this.matchDecorationTypes[rule.color] = matchDecorationType;
-					}
-
-					if (!matchDecorationOptionsMap[rule.color]) {
-						matchDecorationOptionsMap[rule.color] = [];
-					}
-					matchDecorationOptionsMap[rule.color].push({ range: matchRange });
-				}
-			}
-
-			// After processing all rules for the line, add indicators
-			const uniqueRules = Array.from(
-				new Set(matchingRules.map((r) => r.condition))
-			);
-			let marginRight = 4;
-
-			for (const ruleCondition of uniqueRules) {
-				const rule = matchingRules.find((r) => r.condition === ruleCondition);
-				if (!rule) continue;
-
-				const indicatorColor = rule.color || "gray";
-				const colorHex = this.rgbToHex(indicatorColor);
-
-				const indicatorOption: vscode.DecorationOptions = {
-					range: new vscode.Range(line.range.end, line.range.end),
-					renderOptions: {
-						after: {
-							contentText: " ",
-							backgroundColor: indicatorColor,
-							border: "1px solid black",
-							width: "10px",
-							height: "10px",
-							margin: `0 0 0 ${marginRight}px`,
+					const indicatorOption: vscode.DecorationOptions = {
+						range: new vscode.Range(line.range.end, line.range.end),
+						renderOptions: {
+							after: {
+								contentText: " ",
+								backgroundColor: indicatorColor,
+								border: "1px solid black",
+								width: "10px",
+								height: "10px",
+								margin: `0 0 0 ${marginRight}px`,
+							},
 						},
-					},
-				};
-				indicatorDecorationOptions.push(indicatorOption);
-				marginRight += 6;
+					};
+					indicatorDecorationOptions.push(indicatorOption);
+					marginRight += 6;
+				}
+			}
+
+			processedLines = batchEnd;
+
+			// Update progress less frequently
+			if (progress && processedLines % YIELD_INTERVAL === 0) {
+				progress.report({
+					message: `Processed ${processedLines} of ${lineCount} lines`,
+					increment: (BATCH_SIZE / lineCount) * 100,
+				});
+
+				// Yield to event loop
+				await new Promise((resolve) => setTimeout(resolve, 0));
 			}
 		}
 
@@ -995,6 +1052,11 @@ export class RuleManager {
 		editor.setDecorations(
 			this.indicatorDecorationType,
 			indicatorDecorationOptions
+		);
+
+		const duration = Date.now() - startTime;
+		this.outputChannel.appendLine(
+			`Processed ${lineCount} lines in ${duration}ms`
 		);
 	}
 
@@ -1020,9 +1082,14 @@ export class RuleManager {
 		if (this.updateTimeout) {
 			clearTimeout(this.updateTimeout);
 		}
-		this.updateTimeout = setTimeout(() => {
-			this.updateDecorationsWithProgress(editor);
-		}, 300);
+		// Add cancellation check for existing updates
+		if (!this.currentUpdatePromise) {
+			this.currentUpdatePromise = this.updateDecorationsWithProgress(
+				editor
+			).finally(() => {
+				this.currentUpdatePromise = null;
+			});
+		}
 	}
 
 	private escapeRegExp(text: string): string {
@@ -1144,7 +1211,7 @@ export class RuleManager {
 		}
 
 		this.selectedRule = rule;
-		this.currentMatches = this.findOccurrences(rule, document);
+		this.currentMatches = await this.findOccurrences(rule, document);
 		this.currentIndex = -1;
 
 		if (this.currentMatches.length === 0) {
