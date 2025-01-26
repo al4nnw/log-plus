@@ -228,6 +228,7 @@ class SharePanelProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
 export function activate(context: vscode.ExtensionContext) {
 	const ruleManager = new RuleManager(context);
+	ruleManager.migrateRulesToAnnotations();
 
 	// Create and show the selected rule status bar
 	selectedRuleStatusBar = vscode.window.createStatusBarItem(
@@ -261,12 +262,6 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand("logViewer.importRules", async () => {
 			await ruleManager.importRules();
-		})
-	);
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand("logViewer.revertChanges", async () => {
-			await ruleManager.revertChanges();
 		})
 	);
 
@@ -399,7 +394,6 @@ export function activate(context: vscode.ExtensionContext) {
 					color: randomColor.value,
 					displayColor: randomColor.display,
 					isRegex: isRegex,
-					ruleType: "annotation",
 					matchCount: 0,
 				};
 
@@ -523,7 +517,6 @@ export function activate(context: vscode.ExtensionContext) {
 				color: randomColor.value,
 				displayColor: randomColor.display,
 				isRegex: false,
-				ruleType: "annotation",
 				matchCount: 0,
 			};
 
@@ -572,24 +565,17 @@ export function deactivate() {
 interface Rule {
 	condition: string;
 	color: string;
-	displayColor: string; // For display purposes in the UI
+	displayColor: string;
 	isRegex: boolean;
-	replacement?: string; // For replacement rules
-	ruleType: "annotation" | "replacement";
-	matchCount: number; // New property to store match counts
+	matchCount: number;
 }
 
 interface FileRules {
 	[filePath: string]: Rule[];
 }
 
-interface OriginalContent {
-	[filePath: string]: { [lineNumber: number]: string };
-}
-
 export class RuleManager {
 	fileRules: FileRules = {};
-	originalContent: OriginalContent = {};
 	lineDecorationTypes: {
 		[color: string]: vscode.TextEditorDecorationType;
 	} = {};
@@ -597,7 +583,6 @@ export class RuleManager {
 		[color: string]: vscode.TextEditorDecorationType;
 	} = {};
 	indicatorDecorationType: vscode.TextEditorDecorationType;
-	warningDecorationType: vscode.TextEditorDecorationType;
 	updateTimeout: NodeJS.Timeout | undefined = undefined;
 	context: vscode.ExtensionContext;
 	predefinedColors: { name: string; value: string; display: string }[] = [
@@ -666,7 +651,6 @@ export class RuleManager {
 		this.outputChannel.appendLine("Extension activated.");
 
 		this.loadRules();
-		this.loadOriginalContent();
 
 		// Create the indicator decoration type once
 		this.indicatorDecorationType = vscode.window.createTextEditorDecorationType(
@@ -678,16 +662,6 @@ export class RuleManager {
 				overviewRulerLane: vscode.OverviewRulerLane.Center,
 			}
 		);
-
-		// Decoration type for warnings
-		this.warningDecorationType = vscode.window.createTextEditorDecorationType({
-			after: {
-				contentText: "⚠️",
-				margin: "0 0 0 4px",
-			},
-			overviewRulerColor: "yellow",
-			overviewRulerLane: vscode.OverviewRulerLane.Right,
-		});
 	}
 
 	/**
@@ -709,56 +683,45 @@ export class RuleManager {
 		}
 
 		const fileUri = editor.document.uri.toString();
-		const fsPath = editor.document.uri.fsPath;
-		const isPlusFile = fsPath.endsWith("-plus" + path.extname(fsPath));
 
-		while (true) {
-			const rules = this.fileRules[fileUri] || [];
-
-			const options: vscode.QuickPickItem[] = rules.map((rule, index) => {
-				const icon = rule.ruleType === "annotation" ? "🔍" : "✏️";
+		const options: vscode.QuickPickItem[] = this.fileRules[fileUri].map(
+			(rule, index) => {
 				const colorName =
 					this.predefinedColors.find((c) => c.value === rule.color)?.display ||
 					"Custom Color";
-				const colorSquare = "■";
 				return {
-					label: `${index + 1}. ${colorSquare} ${icon} ${rule.condition}`,
+					label: `${index + 1}. ■ 🔍 ${rule.condition}`,
 					description: `${colorName}`,
 				};
-			});
-
-			options.push(
-				{ label: "Add a new rule", description: "" },
-				{ label: "Import Rules", description: "" },
-				{ label: "Export Rules", description: "" },
-				isPlusFile
-					? { label: "Revert Changes", description: "" }
-					: { label: 'Convert to "-plus"', description: "" },
-				{ label: "Exit", description: "" }
-			);
-
-			const selection = await vscode.window.showQuickPick(options, {
-				placeHolder: "Select a rule to manage",
-			});
-
-			if (!selection || selection.label === "Exit") {
-				return;
 			}
+		);
 
-			if (selection.label === "Add a new rule") {
-				await this.addHighlightRule();
-			} else if (selection.label === "Import Rules") {
-				await this.importRules();
-			} else if (selection.label === "Export Rules") {
-				await this.exportRules();
-			} else if (selection.label === 'Convert to "-plus"') {
-				await this.revertChanges();
-			} else {
-				// User selected a rule
-				const index = parseInt(selection.label.split(".")[0]) - 1;
-				if (index >= 0 && index < rules.length) {
-					await this.manageSelectedRule(rules[index], editor);
-				}
+		options.push(
+			{ label: "Add a new rule", description: "" },
+			{ label: "Import Rules", description: "" },
+			{ label: "Export Rules", description: "" },
+			{ label: "Exit", description: "" }
+		);
+
+		const selection = await vscode.window.showQuickPick(options, {
+			placeHolder: "Select a rule to manage",
+		});
+
+		if (!selection || selection.label === "Exit") {
+			return;
+		}
+
+		if (selection.label === "Add a new rule") {
+			await this.addHighlightRule();
+		} else if (selection.label === "Import Rules") {
+			await this.importRules();
+		} else if (selection.label === "Export Rules") {
+			await this.exportRules();
+		} else {
+			// User selected a rule
+			const index = parseInt(selection.label.split(".")[0]) - 1;
+			if (index >= 0 && index < this.fileRules[fileUri].length) {
+				await this.manageSelectedRule(this.fileRules[fileUri][index], editor);
 			}
 		}
 	}
@@ -892,7 +855,7 @@ export class RuleManager {
 			const editOptions = [
 				"Change Condition",
 				"Toggle Regex",
-				"Change Color/Replacement",
+				"Change Color",
 				"Back",
 			];
 			const selection = await vscode.window.showQuickPick(editOptions, {
@@ -921,69 +884,30 @@ export class RuleManager {
 					rule.isRegex = !rule.isRegex;
 					break;
 
-				case "Change Color/Replacement":
-					if (rule.ruleType === "annotation") {
-						const colorPick = await vscode.window.showQuickPick(
-							this.predefinedColors.map((c) => c.display),
-							{
-								placeHolder: "Select a highlight color",
-								canPickMany: false,
-								ignoreFocusOut: true,
-							}
-						);
+				case "Change Color":
+					const colorPick = await vscode.window.showQuickPick(
+						this.predefinedColors.map((c) => c.display),
+						{ placeHolder: "Select a highlight color" }
+					);
 
-						if (!colorPick) {
-							return;
-						}
-
-						const colorObj = this.predefinedColors.find(
-							(c) => c.display === colorPick
-						);
-						if (!colorObj) {
-							return;
-						}
-
-						rule.color = colorObj.value;
-						rule.displayColor = colorObj.display;
-					} else if (rule.ruleType === "replacement") {
-						const replacement = await vscode.window.showInputBox({
-							prompt: "Enter replacement text",
-							placeHolder: "Replacement text",
-							value: rule.replacement,
-						});
-
-						if (replacement === undefined) {
-							return;
-						}
-
-						if (replacement.includes(rule.condition)) {
-							vscode.window.showErrorMessage(
-								"Replacement text cannot contain the search term to prevent infinite loops."
-							);
-							return;
-						}
-
-						rule.replacement = replacement;
+					if (!colorPick) {
+						return;
 					}
+
+					const colorObj = this.predefinedColors.find(
+						(c) => c.display === colorPick
+					);
+					if (!colorObj) {
+						return;
+					}
+
+					rule.color = colorObj.value;
+					rule.displayColor = colorObj.display;
 					break;
 			}
 
 			await this.saveRules();
 			await this.updateDecorationsWithProgress(editor);
-
-			// For replacement rules, re-apply replacements
-			if (rule.ruleType === "replacement") {
-				await vscode.window.withProgress(
-					{
-						location: vscode.ProgressLocation.Window,
-						title: "Applying rules...",
-					},
-					async () => {
-						await this.applyReplacementRule(editor, rule);
-						await this.updateDecorationsWithProgress(editor);
-					}
-				);
-			}
 		}
 	}
 
@@ -1000,21 +924,7 @@ export class RuleManager {
 		if (index >= 0) {
 			rules.splice(index, 1);
 			await this.saveRules();
-
-			if (rule.ruleType === "replacement") {
-				await vscode.window.withProgress(
-					{
-						location: vscode.ProgressLocation.Window,
-						title: "Reverting content...",
-					},
-					async () => {
-						await this.restoreOriginalContent(editor, rule);
-						await this.updateDecorationsWithProgress(editor);
-					}
-				);
-			} else {
-				await this.updateDecorationsWithProgress(editor);
-			}
+			await this.updateDecorationsWithProgress(editor);
 
 			this.outputChannel.appendLine(`Deleted rule: ${rule.condition}`);
 		}
@@ -1033,23 +943,6 @@ export class RuleManager {
 		}
 
 		const fileUri = editor.document.uri.toString();
-		const fsPath = editor.document.uri.fsPath;
-		const isPlusFile = fsPath.endsWith("-plus" + path.extname(fsPath));
-
-		const ruleTypeOptions = ["Annotation"];
-		if (isPlusFile) {
-			ruleTypeOptions.push("Replacement");
-		}
-
-		const ruleTypePick = await vscode.window.showQuickPick(ruleTypeOptions, {
-			placeHolder: "Select the type of rule to create",
-		});
-
-		if (!ruleTypePick) {
-			return;
-		}
-
-		const ruleType = ruleTypePick.toLowerCase() as "annotation" | "replacement";
 
 		const searchTerm = await vscode.window.showInputBox({
 			prompt: "Enter the search term or pattern",
@@ -1060,66 +953,29 @@ export class RuleManager {
 			return;
 		}
 
-		const isRegexPick = await vscode.window.showQuickPick(["No", "Yes"], {
-			placeHolder: "Is this a regular expression?",
-		});
+		const isRegex = searchTerm.startsWith("/") && searchTerm.endsWith("/");
+		const condition = isRegex ? searchTerm.slice(1, -1) : searchTerm;
 
-		if (!isRegexPick) {
-			return;
-		}
+		// Get random color
+		const colors = this.predefinedColors;
+		const usedColors = this.getRulesForFile(fileUri).map((r) => r.color);
+		const availableColors = colors.filter((c) => !usedColors.includes(c.value));
+		const randomColor =
+			availableColors.length > 0
+				? availableColors[Math.floor(Math.random() * availableColors.length)]
+				: colors[Math.floor(Math.random() * colors.length)];
 
-		const isRegex = isRegexPick === "Yes";
-
-		let colorObj;
-		let replacement;
-
-		if (ruleType === "annotation") {
-			const colorPick = await vscode.window.showQuickPick(
-				this.predefinedColors.map((c) => c.display),
-				{
-					placeHolder: "Select a highlight color",
-				}
-			);
-
-			if (!colorPick) {
-				return;
-			}
-
-			colorObj = this.predefinedColors.find((c) => c.display === colorPick);
-			if (!colorObj) {
-				return;
-			}
-		} else if (ruleType === "replacement") {
-			replacement = await vscode.window.showInputBox({
-				prompt: "Enter replacement text",
-				placeHolder: "Replacement text",
-			});
-
-			if (replacement === undefined) {
-				return;
-			}
-
-			if (replacement.includes(searchTerm)) {
-				vscode.window.showErrorMessage(
-					"Replacement text cannot contain the search term to prevent infinite loops."
-				);
-				return;
-			}
-		}
+		const newRule: Rule = {
+			condition: condition,
+			color: randomColor.value,
+			displayColor: randomColor.display,
+			isRegex: isRegex,
+			matchCount: 0,
+		};
 
 		if (!this.fileRules[fileUri]) {
 			this.fileRules[fileUri] = [];
 		}
-
-		const newRule: Rule = {
-			condition: searchTerm,
-			isRegex: isRegex,
-			ruleType: ruleType,
-			color: colorObj ? colorObj.value : "",
-			displayColor: colorObj ? colorObj.display : "",
-			replacement: replacement,
-			matchCount: 0, // Initialize matchCount
-		};
 
 		this.fileRules[fileUri].push(newRule);
 
@@ -1141,10 +997,6 @@ export class RuleManager {
 			},
 			async () => {
 				await this.updateDecorationsWithProgress(editor);
-				if (ruleType === "replacement") {
-					await this.applyReplacementRule(editor, newRule);
-					await this.updateDecorationsWithProgress(editor);
-				}
 			}
 		);
 
@@ -1267,147 +1119,6 @@ export class RuleManager {
 	}
 
 	/**
-	 * Applies replacement rules by modifying the document content.
-	 * @param editor The text editor.
-	 * @param rule The replacement rule to apply.
-	 */
-	private async applyReplacementRule(editor: vscode.TextEditor, rule: Rule) {
-		const document = editor.document;
-		const fileUri = document.uri.toString();
-		const edit = new vscode.WorkspaceEdit();
-		const regex = rule.isRegex
-			? new RegExp(rule.condition, "gi")
-			: new RegExp(this.escapeRegExp(rule.condition), "gi");
-
-		const originalLines = this.originalContent[fileUri] || {};
-
-		for (let lineNum = 0; lineNum < document.lineCount; lineNum++) {
-			const line = document.lineAt(lineNum);
-			let lineText = line.text;
-
-			if (regex.test(lineText)) {
-				// Store original line if not already stored
-				if (!originalLines[lineNum]) {
-					originalLines[lineNum] = lineText;
-				}
-
-				lineText = lineText.replace(regex, rule.replacement || "");
-				edit.replace(document.uri, line.range, lineText);
-			}
-		}
-
-		await vscode.workspace.applyEdit(edit);
-
-		this.originalContent[fileUri] = originalLines;
-		await this.saveOriginalContent();
-
-		this.outputChannel.appendLine(
-			`Applied replacement rule: ${rule.condition}`
-		);
-	}
-
-	/**
-	 * Restores original content for lines affected by a replacement rule.
-	 * @param editor The text editor.
-	 * @param rule The replacement rule to revert.
-	 */
-	private async restoreOriginalContent(editor: vscode.TextEditor, rule: Rule) {
-		const document = editor.document;
-		const fileUri = document.uri.toString();
-		const originalLines = this.originalContent[fileUri];
-
-		if (!originalLines) {
-			return;
-		}
-
-		const edit = new vscode.WorkspaceEdit();
-
-		for (const lineNumStr in originalLines) {
-			const lineNum = parseInt(lineNumStr, 10);
-			const originalText = originalLines[lineNum];
-
-			const line = document.lineAt(lineNum);
-			edit.replace(document.uri, line.range, originalText);
-		}
-
-		await vscode.workspace.applyEdit(edit);
-
-		delete this.originalContent[fileUri];
-		await this.saveOriginalContent();
-
-		this.outputChannel.appendLine(
-			`Restored original content for rule: ${rule.condition}`
-		);
-	}
-
-	/**
-	 * Reverts changes made to the "-plus" file.
-	 */
-	public async revertChanges() {
-		const editor = vscode.window.activeTextEditor;
-		if (!editor) {
-			vscode.window.showErrorMessage("No active editor found.");
-			return;
-		}
-
-		const document = editor.document;
-		const filePath = document.uri.fsPath;
-
-		if (!filePath.endsWith("-plus" + path.extname(filePath))) {
-			vscode.window.showInformationMessage(
-				'Revert is only available for "-plus" files.'
-			);
-			return;
-		}
-
-		const confirm = await vscode.window.showWarningMessage(
-			"Are you sure you want to revert all changes?",
-			"Yes",
-			"No"
-		);
-
-		if (confirm !== "Yes") {
-			return;
-		}
-
-		const originalFilePath = filePath.replace(
-			"-plus" + path.extname(filePath),
-			path.extname(filePath)
-		);
-
-		try {
-			const originalContent = await vscode.workspace.fs.readFile(
-				vscode.Uri.file(originalFilePath)
-			);
-
-			const edit = new vscode.WorkspaceEdit();
-			const fullRange = new vscode.Range(
-				document.positionAt(0),
-				document.positionAt(document.getText().length)
-			);
-			edit.replace(document.uri, fullRange, originalContent.toString());
-			await vscode.workspace.applyEdit(edit);
-
-			delete this.originalContent[document.uri.toString()];
-			await this.saveOriginalContent();
-			delete this.fileRules[document.uri.toString()];
-			await this.saveRules();
-
-			await this.updateDecorationsWithProgress(editor);
-
-			vscode.window.showInformationMessage("Changes reverted successfully.");
-			this.outputChannel.appendLine("Reverted changes.");
-		} catch (error) {
-			vscode.window.showErrorMessage(
-				"Failed to revert changes: " + (error as Error).message
-			);
-			this.outputChannel.appendLine(
-				"Error reverting changes: " + (error as Error).message
-			);
-		}
-	}
-
-	/**
 	 * Updates the decorations (highlighting) in the editor with a loading indicator.
 	 * @param editor The text editor to update.
 	 */
@@ -1453,7 +1164,6 @@ export class RuleManager {
 				editor.setDecorations(decorationType, []);
 			}
 			editor.setDecorations(this.indicatorDecorationType, []);
-			editor.setDecorations(this.warningDecorationType, []);
 			return;
 		}
 
@@ -1464,7 +1174,6 @@ export class RuleManager {
 			editor.setDecorations(decorationType, []);
 		}
 		editor.setDecorations(this.indicatorDecorationType, []);
-		editor.setDecorations(this.warningDecorationType, []);
 
 		const indicatorDecorationOptions: vscode.DecorationOptions[] = [];
 		const lineDecorationOptionsMap: {
@@ -1473,8 +1182,6 @@ export class RuleManager {
 		const matchDecorationOptionsMap: {
 			[color: string]: vscode.DecorationOptions[];
 		} = {};
-		const warningDecorationOptions: vscode.DecorationOptions[] = [];
-		const replacementCounts: { [line: number]: number } = {};
 
 		const lineCount = editor.document.lineCount;
 
@@ -1517,11 +1224,6 @@ export class RuleManager {
 
 						// Increment match count for the rule
 						rule.matchCount++;
-
-						if (rule.ruleType === "replacement") {
-							replacementCounts[lineNum] =
-								(replacementCounts[lineNum] || 0) + 1;
-						}
 					}
 
 					const startPos = new vscode.Position(lineNum, match.index);
@@ -1591,18 +1293,6 @@ export class RuleManager {
 			editor.setDecorations(decorationType, options);
 		}
 
-		for (const lineNumStr in replacementCounts) {
-			const lineNum = parseInt(lineNumStr, 10);
-			if (replacementCounts[lineNum] > 1) {
-				const line = editor.document.lineAt(lineNum);
-				const warningOption: vscode.DecorationOptions = {
-					range: new vscode.Range(line.range.end, line.range.end),
-				};
-				warningDecorationOptions.push(warningOption);
-			}
-		}
-		editor.setDecorations(this.warningDecorationType, warningDecorationOptions);
-
 		editor.setDecorations(
 			this.indicatorDecorationType,
 			indicatorDecorationOptions
@@ -1651,22 +1341,6 @@ export class RuleManager {
 			{}
 		);
 		this.outputChannel.appendLine("Rules loaded.");
-	}
-
-	async saveOriginalContent() {
-		await this.context.workspaceState.update(
-			"originalContent",
-			this.originalContent
-		);
-		this.outputChannel.appendLine("Original content saved.");
-	}
-
-	private loadOriginalContent() {
-		this.originalContent = this.context.workspaceState.get<OriginalContent>(
-			"originalContent",
-			{}
-		);
-		this.outputChannel.appendLine("Original content loaded.");
 	}
 
 	// Retrieve rules for a specific file
@@ -1795,5 +1469,16 @@ export class RuleManager {
 		this.currentMatches = [];
 		this.currentIndex = -1;
 		this.ruleDeselectedEmitter.fire();
+	}
+
+	public migrateRulesToAnnotations() {
+		for (const fileUri in this.fileRules) {
+			this.fileRules[fileUri] = this.fileRules[fileUri].map((rule) => {
+				// Remove any legacy replacement field references
+				const { ...rest } = rule;
+				return rest;
+			});
+		}
+		this.saveRules();
 	}
 }

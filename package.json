@@ -2,7 +2,7 @@
   "name": "log-plus",
   "displayName": "Log Plus",
   "description": "Adds helpful features to navigate log files",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/al4nnw/log-plus.git"
@@ -36,10 +36,6 @@
       {
         "command": "logViewer.revertChanges",
         "title": "Revert Changes"
-      },
-      {
-        "command": "logViewer.convertToPlus",
-        "title": "Convert to Plus File"
       },
       {
         "command": "logViewer.firstOccurrence",
