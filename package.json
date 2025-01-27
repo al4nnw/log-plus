@@ -2,7 +2,7 @@
   "name": "log-plus",
   "displayName": "Log Plus",
   "description": "Adds helpful features to navigate log files",
-  "version": "3.2.1",
+  "version": "3.3.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/al4nnw/log-plus.git"
@@ -77,6 +77,12 @@
         "command": "logViewer.addNewSearch",
         "title": "Add New Search",
         "icon": "$(add)"
+      },
+      {
+        "command": "logViewer.toggleFilter",
+        "title": "Toggle Line Filter",
+        "icon": "$(filter)",
+        "category": "Log Viewer"
       }
     ],
     "viewsContainers": {
@@ -122,6 +128,18 @@
           "command": "logViewer.refreshRules",
           "when": "view == logViewer.rulesPanel",
           "group": "navigation"
+        },
+        {
+          "command": "logViewer.toggleFilter",
+          "when": "view == logViewer.rulesPanel && logViewer.filterActive == false",
+          "group": "navigation",
+          "icon": "$(filter)"
+        },
+        {
+          "command": "logViewer.toggleFilter",
+          "when": "view == logViewer.rulesPanel && logViewer.filterActive == true",
+          "group": "navigation",
+          "icon": "$(filter-filled)"
         }
       ]
     },

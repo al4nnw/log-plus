@@ -614,6 +614,10 @@ export function activate(context: vscode.ExtensionContext) {
 			// Refresh views
 			openFileNameProvider.setOpenFileName(fileUri);
 			navigationButtonProvider.refresh();
+		}),
+
+		vscode.commands.registerCommand("logViewer.toggleFilter", () => {
+			ruleManager.toggleFilter();
 		})
 	);
 
@@ -622,6 +626,13 @@ export function activate(context: vscode.ExtensionContext) {
 	vscode.window.registerTreeDataProvider(
 		"logViewer.sharePanel",
 		sharePanelProvider
+	);
+
+	// After initializing ruleManager
+	vscode.commands.executeCommand(
+		"setContext",
+		"logViewer.filterActive",
+		ruleManager.filterActive
 	);
 }
 
@@ -732,6 +743,10 @@ export class RuleManager {
 	// Add class property to track current update
 	private currentUpdatePromise: Promise<void> | null = null;
 
+	public filterActive: boolean = false;
+	private filterDecorationType: vscode.TextEditorDecorationType;
+	private matchedLines = new Set<number>();
+
 	constructor(context: vscode.ExtensionContext) {
 		this.context = context;
 
@@ -751,6 +766,12 @@ export class RuleManager {
 				overviewRulerLane: vscode.OverviewRulerLane.Center,
 			}
 		);
+
+		this.filterDecorationType = vscode.window.createTextEditorDecorationType({
+			backgroundColor: new vscode.ThemeColor("editor.background"),
+			color: new vscode.ThemeColor("editor.background"),
+			textDecoration: "none",
+		});
 	}
 
 	/**
@@ -998,6 +1019,7 @@ export class RuleManager {
 
 		const lineCount = editor.document.lineCount;
 		let processedLines = 0;
+		this.matchedLines.clear();
 
 		while (processedLines < lineCount) {
 			const batchEnd = Math.min(processedLines + BATCH_SIZE, lineCount);
@@ -1051,6 +1073,10 @@ export class RuleManager {
 							matchDecorationOptionsMap[rule.color] = [];
 						}
 						matchDecorationOptionsMap[rule.color].push({ range: matchRange });
+
+						if (hasMatch) {
+							this.matchedLines.add(lineNum);
+						}
 					}
 				}
 
@@ -1115,6 +1141,20 @@ export class RuleManager {
 			this.indicatorDecorationType,
 			indicatorDecorationOptions
 		);
+
+		// Apply filter if active
+		if (this.filterActive) {
+			const allLines = Array.from({ length: lineCount }, (_, i) => i);
+			const unmatchedLines = allLines.filter(
+				(line) => !this.matchedLines.has(line)
+			);
+			const unmatchedRanges = unmatchedLines.map(
+				(line) => editor.document.lineAt(line).range
+			);
+			editor.setDecorations(this.filterDecorationType, unmatchedRanges);
+		} else {
+			editor.setDecorations(this.filterDecorationType, []);
+		}
 
 		const duration = Date.now() - startTime;
 		this.outputChannel.appendLine(
@@ -1315,5 +1355,17 @@ export class RuleManager {
 			}));
 		}
 		this.saveRules();
+	}
+
+	public toggleFilter() {
+		this.filterActive = !this.filterActive;
+		vscode.commands.executeCommand(
+			"setContext",
+			"logViewer.filterActive",
+			this.filterActive
+		);
+		if (vscode.window.activeTextEditor) {
+			this.triggerUpdateDecorations(vscode.window.activeTextEditor);
+		}
 	}
 }
