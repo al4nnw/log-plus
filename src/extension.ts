@@ -44,20 +44,9 @@ class OpenFileNameProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 			return Promise.resolve([
 				searchHeader,
 				...rules.map((rule) => this.createRuleItem(rule)),
-				this.createAddRuleItem(),
 			]);
 		}
 		return Promise.resolve([]);
-	}
-
-	private createAddRuleItem(): vscode.TreeItem {
-		const item = new vscode.TreeItem("Search for...");
-		item.iconPath = new ThemeIcon("add");
-		item.command = {
-			command: "logViewer.addRule",
-			title: "Add Rule",
-		};
-		return item;
 	}
 
 	private createRuleItem(rule: Rule): vscode.TreeItem {
@@ -65,7 +54,14 @@ class OpenFileNameProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 			`${rule.condition} (${rule.matchCount})`,
 			vscode.TreeItemCollapsibleState.None
 		);
-		item.iconPath = new ThemeIcon("filter");
+
+		// Replace the ThemeIcon with a color block
+		const svg = `<svg width="16" height="16" xmlns="http://www.w3.org/2000/svg">
+			<rect width="16" height="16" fill="${rule.color}"/>
+		</svg>`.replace(/\n/g, "");
+		const encodedSvg = encodeURIComponent(svg);
+		item.iconPath = vscode.Uri.parse(`data:image/svg+xml;utf8,${encodedSvg}`);
+
 		item.contextValue = "rule";
 		item.description = rule.displayColor;
 		item.tooltip = `Click to select rule: ${rule.condition}`;
@@ -358,64 +354,13 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Register new commands
 	context.subscriptions.push(
-		vscode.commands.registerCommand("logViewer.addRule", async () => {
-			const editor = vscode.window.activeTextEditor;
-			if (!editor) return;
-
-			const searchTerm = await vscode.window.showInputBox({
-				prompt: "Enter search term or pattern",
-				placeHolder: "Search term (add /slashes/ for regex)",
-				title: "New Highlight Rule",
-			});
-
-			if (searchTerm) {
-				const isRegex = searchTerm.startsWith("/") && searchTerm.endsWith("/");
-				const condition = isRegex ? searchTerm.slice(1, -1) : searchTerm;
-				const fileUri = editor.document.uri.toString();
-
-				// Get random color
-				const colors = ruleManager.predefinedColors;
-				const usedColors = ruleManager
-					.getRulesForFile(fileUri)
-					.map((r) => r.color);
-				const availableColors = colors.filter(
-					(c) => !usedColors.includes(c.value)
-				);
-				const randomColor =
-					availableColors.length > 0
-						? availableColors[
-								Math.floor(Math.random() * availableColors.length)
-						  ]
-						: colors[Math.floor(Math.random() * colors.length)];
-
-				const newRule: Rule = {
-					condition: condition,
-					color: randomColor.value,
-					displayColor: randomColor.display,
-					isRegex: isRegex,
-					matchCount: 0,
-					_compiled: undefined,
-					_dirty: true,
-				};
-
-				if (!ruleManager.fileRules[fileUri]) {
-					ruleManager.fileRules[fileUri] = [];
-				}
-				ruleManager.fileRules[fileUri].push(newRule);
-				await ruleManager.saveRules();
-				ruleManager.triggerUpdateDecorations(editor);
-				ruleManager.ruleChangedEmitter.fire();
-				openFileNameProvider.setOpenFileName(editor.document.uri.toString());
-			}
-		}),
-
 		vscode.commands.registerCommand(
 			"logViewer.editRule",
 			async (rule: Rule) => {
 				const newCondition = await vscode.window.showInputBox({
-					prompt: "Edit rule pattern",
+					prompt: "Edit search term",
 					value: rule.condition,
-					placeHolder: "Enter new pattern",
+					placeHolder: "Enter new search term",
 				});
 
 				// Check if the new condition is empty
@@ -494,42 +439,65 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!editor) return;
 
 			const fileUri = editor.document.uri.toString();
-
 			const selection = editor.selection;
+
 			if (selection.isEmpty) {
 				vscode.window.showWarningMessage("No text selected");
 				return;
 			}
 
 			const selectedText = editor.document.getText(selection);
-			const colors = ruleManager.predefinedColors;
-			const usedColors = ruleManager
-				.getRulesForFile(fileUri)
-				.map((r) => r.color);
-			const availableColors = colors.filter(
-				(c) => !usedColors.includes(c.value)
+			const existingRules = ruleManager.getRulesForFile(fileUri);
+			const existingRule = existingRules.find(
+				(r) => r.condition === selectedText
 			);
-			const randomColor =
-				availableColors.length > 0
-					? availableColors[Math.floor(Math.random() * availableColors.length)]
-					: colors[Math.floor(Math.random() * colors.length)];
 
-			const newRule: Rule = {
-				condition: selectedText,
-				color: randomColor.value,
-				displayColor: randomColor.display,
-				isRegex: false,
-				matchCount: 0,
-				_compiled: undefined,
-				_dirty: true,
-			};
+			if (existingRule) {
+				// Remove existing rule
+				ruleManager.fileRules[fileUri] = existingRules.filter(
+					(r) => r !== existingRule
+				);
+				await ruleManager.saveRules();
+				ruleManager.triggerUpdateDecorations(editor);
 
-			if (!ruleManager.fileRules[fileUri]) {
-				ruleManager.fileRules[fileUri] = [];
+				// Check if removed rule was selected
+				if (ruleManager.selectedRule === existingRule) {
+					await vscode.commands.executeCommand("logViewer.deselectRule");
+				}
+
+				vscode.window.showInformationMessage(`Rule "${selectedText}" removed`);
+			} else {
+				// Add new rule
+				const colors = ruleManager.predefinedColors;
+				const usedColors = existingRules.map((r) => r.color);
+				const availableColors = colors.filter(
+					(c) => !usedColors.includes(c.value)
+				);
+				const randomColor =
+					availableColors.length > 0
+						? availableColors[
+								Math.floor(Math.random() * availableColors.length)
+						  ]
+						: colors[Math.floor(Math.random() * colors.length)];
+
+				const newRule: Rule = {
+					condition: selectedText,
+					color: randomColor.value,
+					displayColor: randomColor.display,
+					isRegex: false,
+					matchCount: 0,
+					_compiled: undefined,
+					_dirty: true,
+				};
+
+				if (!ruleManager.fileRules[fileUri]) {
+					ruleManager.fileRules[fileUri] = [];
+				}
+				ruleManager.fileRules[fileUri].push(newRule);
+				await ruleManager.saveRules();
+				ruleManager.triggerUpdateDecorations(editor);
+				vscode.window.showInformationMessage(`Rule "${selectedText}" added`);
 			}
-			ruleManager.fileRules[fileUri].push(newRule);
-			await ruleManager.saveRules();
-			ruleManager.triggerUpdateDecorations(editor);
 
 			// Refresh views
 			openFileNameProvider.setOpenFileName(fileUri);
@@ -551,6 +519,37 @@ export function activate(context: vscode.ExtensionContext) {
 
 				openFileNameProvider.setOpenFileName(editor.document.uri.toString());
 			}
+		}),
+
+		vscode.commands.registerCommand("logViewer.clearAllRules", async () => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor) {
+				vscode.window.showWarningMessage("No active text editor");
+				return;
+			}
+
+			const fileUri = editor.document.uri.toString();
+			if (
+				!ruleManager.fileRules[fileUri] ||
+				ruleManager.fileRules[fileUri].length === 0
+			) {
+				vscode.window.showInformationMessage("No rules to clear for this file");
+				return;
+			}
+
+			// Remove the confirmation dialog
+			delete ruleManager.fileRules[fileUri];
+			await ruleManager.saveRules();
+			ruleManager.triggerUpdateDecorations(editor);
+
+			// Deselect any selected rule
+			await vscode.commands.executeCommand("logViewer.deselectRule");
+
+			// Refresh views
+			openFileNameProvider.setOpenFileName(fileUri);
+			navigationButtonProvider.refresh();
+
+			vscode.window.showInformationMessage("All rules cleared for this file");
 		})
 	);
 
@@ -654,9 +653,8 @@ export class RuleManager {
 
 	private getCachedRegex(rule: Rule): RegExp {
 		if (!rule._compiled || rule._dirty) {
-			rule._compiled = rule.isRegex
-				? new RegExp(rule.condition, "gi")
-				: new RegExp(this.escapeRegExp(rule.condition), "gi");
+			// Always escape the text and create a literal regex
+			rule._compiled = new RegExp(this.escapeRegExp(rule.condition), "gi");
 			rule._dirty = false;
 		}
 		return rule._compiled;
@@ -1106,6 +1104,14 @@ export class RuleManager {
 			"fileRules",
 			{}
 		);
+		// Reset compiled regexes after loading
+		for (const fileUri in this.fileRules) {
+			this.fileRules[fileUri] = this.fileRules[fileUri].map((rule) => ({
+				...rule,
+				_compiled: undefined,
+				_dirty: true,
+			}));
+		}
 		this.outputChannel.appendLine("Rules loaded.");
 	}
 
@@ -1239,11 +1245,10 @@ export class RuleManager {
 
 	public migrateRulesToAnnotations() {
 		for (const fileUri in this.fileRules) {
-			this.fileRules[fileUri] = this.fileRules[fileUri].map((rule) => {
-				// Remove any legacy replacement field references
-				const { ...rest } = rule;
-				return rest;
-			});
+			this.fileRules[fileUri] = this.fileRules[fileUri].map((rule) => ({
+				...rule,
+				isRegex: false, // Force all existing rules to be non-regex
+			}));
 		}
 		this.saveRules();
 	}

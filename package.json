@@ -2,7 +2,7 @@
   "name": "log-plus",
   "displayName": "Log Plus",
   "description": "Adds helpful features to navigate log files",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/al4nnw/log-plus.git"
@@ -17,6 +17,11 @@
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "logViewer.clearAllRules",
+        "title": "Clear All Rules",
+        "icon": "$(clear-all)"
+      },
       {
         "command": "logViewer.selectRule",
         "title": "Select Rule"
@@ -52,11 +57,6 @@
       {
         "command": "logViewer.previousOccurrence",
         "title": "Previous"
-      },
-      {
-        "command": "logViewer.addRule",
-        "title": "Add New Rule",
-        "icon": "$(search)"
       },
       {
         "command": "logViewer.changeColor",
@@ -109,7 +109,7 @@
       "view/item/context": [],
       "view/title": [
         {
-          "command": "logViewer.addRule",
+          "command": "logViewer.clearAllRules",
           "when": "view == logViewer.rulesPanel",
           "group": "navigation"
         },
