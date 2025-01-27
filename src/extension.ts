@@ -36,13 +36,22 @@ class OpenFileNameProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 			const rules = this.ruleManager.getRulesForFile(this.openFileName);
 
 			const searchHeader = new vscode.TreeItem(
-				`Searching ${fileName}`,
+				`${fileName}`,
 				vscode.TreeItemCollapsibleState.None
 			);
 			searchHeader.contextValue = "searchHeader";
 
+			// Add the "+ Add Search" button
+			const addSearchItem = new vscode.TreeItem("Add Search");
+			addSearchItem.iconPath = new ThemeIcon("add");
+			addSearchItem.command = {
+				command: "logViewer.addNewSearch",
+				title: "Add New Search",
+			};
+
 			return Promise.resolve([
 				searchHeader,
+				addSearchItem, // Add the new button here
 				...rules.map((rule) => this.createRuleItem(rule)),
 			]);
 		}
@@ -550,6 +559,61 @@ export function activate(context: vscode.ExtensionContext) {
 			navigationButtonProvider.refresh();
 
 			vscode.window.showInformationMessage("All rules cleared for this file");
+		}),
+
+		vscode.commands.registerCommand("logViewer.addNewSearch", async () => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor) return;
+
+			const searchTerm = await vscode.window.showInputBox({
+				prompt: "Enter search term",
+				placeHolder: "Text to search for",
+			});
+
+			if (!searchTerm) return;
+
+			const fileUri = editor.document.uri.toString();
+			const existingRules = ruleManager.getRulesForFile(fileUri);
+
+			// Check if rule already exists
+			if (existingRules.some((r) => r.condition === searchTerm)) {
+				vscode.window.showWarningMessage(`Rule "${searchTerm}" already exists`);
+				return;
+			}
+
+			// Add new rule (similar to addSelectedText logic)
+			const colors = ruleManager.predefinedColors;
+			const usedColors = existingRules.map((r) => r.color);
+			const availableColors = colors.filter(
+				(c) => !usedColors.includes(c.value)
+			);
+			const randomColor =
+				availableColors.length > 0
+					? availableColors[Math.floor(Math.random() * availableColors.length)]
+					: colors[Math.floor(Math.random() * colors.length)];
+
+			const newRule: Rule = {
+				condition: searchTerm,
+				color: randomColor.value,
+				displayColor: randomColor.display,
+				isRegex: false,
+				matchCount: 0,
+				_compiled: undefined,
+				_dirty: true,
+			};
+
+			if (!ruleManager.fileRules[fileUri]) {
+				ruleManager.fileRules[fileUri] = [];
+			}
+			ruleManager.fileRules[fileUri].push(newRule);
+			await ruleManager.saveRules();
+			ruleManager.triggerUpdateDecorations(editor);
+
+			vscode.window.showInformationMessage(`Added search for "${searchTerm}"`);
+
+			// Refresh views
+			openFileNameProvider.setOpenFileName(fileUri);
+			navigationButtonProvider.refresh();
 		})
 	);
 
