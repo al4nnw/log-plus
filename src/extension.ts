@@ -1029,13 +1029,16 @@ export class RuleManager {
 				const lineText = line.text;
 
 				const matchingRules: Rule[] = [];
-				const appliedRulesSet = new Set<string>();
-				const lineRulesSet = new Set<string>(); // Track rules that already contributed to this line
+				const lineRulesSet = new Set<string>();
 
 				for (const rule of rules) {
 					let regex = this.getCachedRegex(rule);
 					let hasMatch = false;
 					let match;
+
+					// Reset regex lastIndex for proper matching
+					regex.lastIndex = 0;
+
 					while ((match = regex.exec(lineText)) !== null) {
 						// Prevent infinite loops from zero-length matches
 						if (match.index === regex.lastIndex) {
@@ -1043,11 +1046,10 @@ export class RuleManager {
 						}
 
 						hasMatch = true;
-						if (!appliedRulesSet.has(rule.condition)) {
-							matchingRules.push(rule);
-							appliedRulesSet.add(rule.condition);
-							rule.matchCount++;
-						}
+
+						// Remove the appliedRulesSet check and always increment count
+						rule.matchCount++;
+						matchingRules.push(rule);
 
 						// Process each match individually
 						const startPos = new vscode.Position(lineNum, match.index);
