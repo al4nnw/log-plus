@@ -618,7 +618,46 @@ export function activate(context: vscode.ExtensionContext) {
 
 		vscode.commands.registerCommand("logViewer.toggleFilter", () => {
 			ruleManager.toggleFilter();
-		})
+		}),
+
+		vscode.commands.registerCommand(
+			"logViewer.changeSelectedRule",
+			async (args: string) => {
+				const direction = args === "previous" ? "previous" : "next";
+				const editor = vscode.window.activeTextEditor;
+				if (!editor) return;
+
+				const fileUri = editor.document.uri.toString();
+				const rules = ruleManager.getRulesForFile(fileUri);
+
+				if (rules.length === 0) {
+					vscode.window.showWarningMessage("No rules available to select");
+					return;
+				}
+
+				const currentRule = ruleManager.getSelectedRule();
+				let currentIndex = currentRule
+					? rules.findIndex((r) => r.condition === currentRule.condition)
+					: -1;
+
+				// If no rule selected, start at first/last based on direction
+				if (currentIndex === -1) {
+					currentIndex = direction === "next" ? -1 : rules.length;
+				}
+
+				// Calculate new index
+				let newIndex =
+					direction === "next"
+						? (currentIndex + 1) % rules.length
+						: (currentIndex - 1 + rules.length) % rules.length;
+
+				// Select the new rule
+				await vscode.commands.executeCommand(
+					"logViewer.selectRule",
+					rules[newIndex].condition
+				);
+			}
+		)
 	);
 
 	// Register the new SharePanelProvider
@@ -666,44 +705,16 @@ export class RuleManager {
 	updateTimeout: NodeJS.Timeout | undefined = undefined;
 	context: vscode.ExtensionContext;
 	predefinedColors: { name: string; value: string; display: string }[] = [
-		{ name: "Yellow", value: "rgba(255, 255, 0, 1)", display: "Yellow" },
-		{
-			name: "LightGreen",
-			value: "rgba(144, 238, 144, 1)",
-			display: "Light Green",
-		},
-		{
-			name: "LightCoral",
-			value: "rgba(240, 128, 128, 1)",
-			display: "Light Coral",
-		},
-		{
-			name: "LightBlue",
-			value: "rgba(173, 216, 230, 1)",
-			display: "Light Blue",
-		},
-		{ name: "Khaki", value: "rgba(240, 230, 140, 1)", display: "Khaki" },
-		{ name: "Plum", value: "rgba(221, 160, 221, 1)", display: "Plum" },
-		{
-			name: "LightSalmon",
-			value: "rgba(255, 160, 122, 1)",
-			display: "Light Salmon",
-		},
-		{
-			name: "MediumAquamarine",
-			value: "rgba(102, 205, 170, 1)",
-			display: "Medium Aquamarine",
-		},
-		{
-			name: "PaleTurquoise",
-			value: "rgba(175, 238, 238, 1)",
-			display: "Pale Turquoise",
-		},
-		{
-			name: "MistyRose",
-			value: "rgba(255, 228, 225, 1)",
-			display: "Misty Rose",
-		},
+		{ name: "Gold", value: "#FFD700", display: "Gold" },
+		{ name: "LimeGreen", value: "#32CD32", display: "Lime Green" },
+		{ name: "Crimson", value: "#DC143C", display: "Crimson" },
+		{ name: "DodgerBlue", value: "#1E90FF", display: "Dodger Blue" },
+		{ name: "DarkKhaki", value: "#BDB76B", display: "Dark Khaki" },
+		{ name: "Orchid", value: "#DA70D6", display: "Orchid" },
+		{ name: "Coral", value: "#FF7F50", display: "Coral" },
+		{ name: "MediumSeaGreen", value: "#3CB371", display: "Medium Sea Green" },
+		{ name: "CadetBlue", value: "#5F9EA0", display: "Cadet Blue" },
+		{ name: "SlateBlue", value: "#6A5ACD", display: "Slate Blue" },
 	];
 
 	outputChannel: vscode.OutputChannel;
@@ -746,6 +757,9 @@ export class RuleManager {
 	public filterActive: boolean = false;
 	private filterDecorationType: vscode.TextEditorDecorationType;
 	private matchedLines = new Set<number>();
+
+	// Add new decoration type property
+	private selectedRuleDecorationType?: vscode.TextEditorDecorationType;
 
 	constructor(context: vscode.ExtensionContext) {
 		this.context = context;
@@ -1064,8 +1078,8 @@ export class RuleManager {
 						if (!matchDecorationType) {
 							matchDecorationType =
 								vscode.window.createTextEditorDecorationType({
-									backgroundColor: this.applyOpacityToColor(rule.color, 0.5),
-									overviewRulerColor: rule.color,
+									backgroundColor: this.applyOpacityToColor(rule.color, 0.3),
+									overviewRulerColor: this.applyOpacityToColor(rule.color, 0.5),
 									overviewRulerLane: vscode.OverviewRulerLane.Full,
 								});
 							this.matchDecorationTypes[rule.color] = matchDecorationType;
@@ -1104,7 +1118,7 @@ export class RuleManager {
 								border: "1px solid black",
 								width: "10px",
 								height: "10px",
-								margin: `0 0 0 ${marginRight}px`,
+								margin: `0 6px 0 0`,
 							},
 						},
 					};
@@ -1158,6 +1172,56 @@ export class RuleManager {
 			editor.setDecorations(this.filterDecorationType, []);
 		}
 
+		// Add selected rule highlights with text
+		if (this.selectedRule) {
+			// Clear previous decoration type
+			if (this.selectedRuleDecorationType) {
+				this.selectedRuleDecorationType.dispose();
+			}
+
+			// Create new decoration type that hides original text
+			this.selectedRuleDecorationType =
+				vscode.window.createTextEditorDecorationType({
+					textDecoration: "none; font-size: 0;",
+				});
+
+			// Create decoration options with badge styling
+			const selectedRule = this.selectedRule;
+			const textColor = this.getContrastColor(selectedRule.color);
+			const selectedRuleOptions: vscode.DecorationOptions[] =
+				this.currentMatches.map((range) => {
+					const isActive = this.isCursorInRange(editor, range);
+					return {
+						range,
+						renderOptions: {
+							before: {
+								contentText: ` ${selectedRule.condition} `,
+								color: textColor,
+								backgroundColor: this.applyOpacityToColor(
+									selectedRule.color,
+									isActive ? 1 : 0.8
+								),
+								margin: "0 6px 0 0",
+								padding: "2px 12px",
+								borderRadius: "14px",
+								fontWeight: "bold",
+								fontSize: "14px",
+								border: `2px solid ${
+									isActive ? "rgba(0,0,0,0.3)" : "rgba(0,0,0,0.1)"
+								}`,
+								textDecoration: "none",
+								letterSpacing: "0.5px",
+							},
+						},
+					};
+				});
+
+			editor.setDecorations(
+				this.selectedRuleDecorationType,
+				selectedRuleOptions
+			);
+		}
+
 		const duration = Date.now() - startTime;
 		this.outputChannel.appendLine(
 			`Processed ${lineCount} lines in ${duration}ms`
@@ -1165,9 +1229,19 @@ export class RuleManager {
 	}
 
 	private applyOpacityToColor(color: string, opacity: number): string {
+		// Handle hex colors
+		if (color.startsWith("#")) {
+			const hex = color.replace("#", "");
+			const r = parseInt(hex.substring(0, 2), 16);
+			const g = parseInt(hex.substring(2, 4), 16);
+			const b = parseInt(hex.substring(4, 6), 16);
+			return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+		}
+
+		// Handle rgba colors
 		return color.replace(
-			/rgba\((\d+), (\d+), (\d+), [^)]+\)/,
-			`rgba($1, $2, $3, ${opacity})`
+			/rgba?\((\d+), (\d+), (\d+),? ?([\d.]+)?\)/,
+			(_, r, g, b) => `rgba(${r}, ${g}, ${b}, ${opacity})`
 		);
 	}
 
@@ -1231,6 +1305,7 @@ export class RuleManager {
 		if (this.currentMatches.length > 0) {
 			this.currentIndex = 0;
 			this.navigateToMatch(this.currentMatches[this.currentIndex]);
+			this.triggerUpdateDecorations(vscode.window.activeTextEditor!);
 		} else {
 			vscode.window.showInformationMessage("No occurrences to navigate.");
 		}
@@ -1240,6 +1315,7 @@ export class RuleManager {
 		if (this.currentMatches.length > 0) {
 			this.currentIndex = this.currentMatches.length - 1;
 			this.navigateToMatch(this.currentMatches[this.currentIndex]);
+			this.triggerUpdateDecorations(vscode.window.activeTextEditor!);
 		} else {
 			vscode.window.showInformationMessage("No occurrences to navigate.");
 		}
@@ -1260,6 +1336,7 @@ export class RuleManager {
 			});
 			this.currentIndex = nearest;
 			this.navigateToMatch(this.currentMatches[this.currentIndex]);
+			this.triggerUpdateDecorations(editor);
 		} else {
 			vscode.window.showInformationMessage("No occurrences to navigate.");
 		}
@@ -1269,6 +1346,7 @@ export class RuleManager {
 		if (this.currentMatches.length > 0) {
 			this.currentIndex = (this.currentIndex + 1) % this.currentMatches.length;
 			this.navigateToMatch(this.currentMatches[this.currentIndex]);
+			this.triggerUpdateDecorations(vscode.window.activeTextEditor!);
 		} else {
 			vscode.window.showInformationMessage("No occurrences to navigate.");
 		}
@@ -1280,6 +1358,7 @@ export class RuleManager {
 				(this.currentIndex - 1 + this.currentMatches.length) %
 				this.currentMatches.length;
 			this.navigateToMatch(this.currentMatches[this.currentIndex]);
+			this.triggerUpdateDecorations(vscode.window.activeTextEditor!);
 		} else {
 			vscode.window.showInformationMessage("No occurrences to navigate.");
 		}
@@ -1326,6 +1405,14 @@ export class RuleManager {
 		this.currentMatches = await this.findOccurrences(rule, document);
 		this.currentIndex = -1;
 
+		// Add navigation to nearest occurrence
+		if (this.currentMatches.length > 0) {
+			this.navigateToNearestOccurrence();
+		}
+
+		// Add this line to trigger decorations update
+		this.triggerUpdateDecorations(editor);
+
 		if (this.currentMatches.length === 0) {
 			vscode.window.showInformationMessage(
 				`No matches found for rule "${ruleName}".`
@@ -1346,6 +1433,13 @@ export class RuleManager {
 		this.selectedRule = null;
 		this.currentMatches = [];
 		this.currentIndex = -1;
+		if (this.selectedRuleDecorationType) {
+			this.selectedRuleDecorationType.dispose();
+		}
+		// Add this line to clear decorations
+		if (vscode.window.activeTextEditor) {
+			this.triggerUpdateDecorations(vscode.window.activeTextEditor);
+		}
 		this.ruleDeselectedEmitter.fire();
 	}
 
@@ -1369,5 +1463,24 @@ export class RuleManager {
 		if (vscode.window.activeTextEditor) {
 			this.triggerUpdateDecorations(vscode.window.activeTextEditor);
 		}
+	}
+
+	// Update the contrast calculation to use WCAG 2.1 standards
+	private getContrastColor(hexColor: string): string {
+		const cleanColor = hexColor.replace(/[^0-9a-f]/gi, "").slice(0, 6);
+		const r = parseInt(cleanColor.slice(0, 2), 16);
+		const g = parseInt(cleanColor.slice(2, 4), 16);
+		const b = parseInt(cleanColor.slice(4, 6), 16);
+		const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+		return luminance > 0.5 ? "#000000" : "#ffffff";
+	}
+
+	// Add this helper method to check cursor position
+	private isCursorInRange(
+		editor: vscode.TextEditor,
+		range: vscode.Range
+	): boolean {
+		const cursorLine = editor.selection.active.line;
+		return range.start.line <= cursorLine && range.end.line >= cursorLine;
 	}
 }

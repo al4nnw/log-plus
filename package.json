@@ -2,7 +2,7 @@
   "name": "log-plus",
   "displayName": "Log Plus",
   "description": "Adds helpful features to navigate log files",
-  "version": "3.3.2",
+  "version": "3.4.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/al4nnw/log-plus.git"
@@ -141,6 +141,28 @@
       {
         "command": "logViewer.addSelectedText",
         "key": "ctrl+alt+f",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "logViewer.changeSelectedRule",
+        "key": "ctrl+alt+home",
+        "when": "editorTextFocus",
+        "args": "previous"
+      },
+      {
+        "command": "logViewer.changeSelectedRule",
+        "key": "ctrl+alt+end",
+        "when": "editorTextFocus",
+        "args": "next"
+      },
+      {
+        "command": "logViewer.previousOccurrence",
+        "key": "ctrl+alt+pageup",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "logViewer.nextOccurrence",
+        "key": "ctrl+alt+pagedown",
         "when": "editorTextFocus"
       }
     ],
